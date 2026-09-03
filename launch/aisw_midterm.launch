@@ -2,11 +2,11 @@
 <launch>
   <arg name="sim_ip" default="127.0.0.1"/>  <!-- 대회 당일 시뮬 PC IP로 변경 -->
 
-  <node pkg="aisw_2026" type="aisw_udp_bridge.py" name="aisw_udp_bridge" output="screen">
+  <node pkg="aisw_2026" type="aisw_udp_bridge.py" name="aisw_udp_bridge" output="screen" respawn="true">
     <param name="sim_ip" value="$(arg sim_ip)"/>
   </node>
 
-  <node pkg="aisw_2026" type="aisw_lidar_obstacles.py" name="aisw_lidar_obstacles" output="screen"/>
+  <node pkg="aisw_2026" type="aisw_lidar_obstacles.py" name="aisw_lidar_obstacles" output="screen" respawn="true"/>
 
   <env name="PYTHONUNBUFFERED" value="1"/>
   <!-- 환경변수 스트리핑 대비: ROS 공유 라이브러리 경로 명시 -->

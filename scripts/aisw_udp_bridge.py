@@ -129,7 +129,10 @@ class Bridge:
                     if self._prev_fix is not None and t > self._prev_fix[0]:
                         dt = t - self._prev_fix[0]
                         if dt < 1.0:
-                            ego.velocity.x = ((ex-self._prev_fix[1])**2 + (ny-self._prev_fix[2])**2) ** 0.5 / dt  # m/s
+                            raw_v = ((ex-self._prev_fix[1])**2 + (ny-self._prev_fix[2])**2) ** 0.5 / dt  # m/s
+                            # [2026_AISW] EMA 저역필터 — 미분 노이즈가 PID D항 채터링(브레이크등 점멸) 유발 방지
+                            self._v_ema = 0.25*raw_v + 0.75*getattr(self, '_v_ema', raw_v)
+                            ego.velocity.x = self._v_ema
                     self._prev_fix = (t, ex, ny)
                     self.pub_comp.publish(ego)
 

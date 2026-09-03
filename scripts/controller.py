@@ -263,12 +263,16 @@ class AccelCmd_Converter:
         self.output = p_control + self.i_control + d_control
         self.prev_error = error
 
-        if self.output > 0:
+        # [2026_AISW] 데드밴드: |출력|<0.12는 타행(coast) — accel/brake 채터링·브레이크등 점멸 방지
+        if self.output > 0.12:
             accel_cmd = self.output
             brake_cmd = 0.0
-        else:
+        elif self.output < -0.12:
             accel_cmd = 0.0
             brake_cmd = -self.output
+        else:
+            accel_cmd = 0.0
+            brake_cmd = 0.0
         # print(self.output)
         return accel_cmd, brake_cmd
     
