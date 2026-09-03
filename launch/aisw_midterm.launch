@@ -9,6 +9,8 @@
   <node pkg="aisw_2026" type="aisw_lidar_obstacles.py" name="aisw_lidar_obstacles" output="screen"/>
 
   <env name="PYTHONUNBUFFERED" value="1"/>
+  <!-- 환경변수 스트리핑 대비: ROS 공유 라이브러리 경로 명시 -->
+  <env name="LD_LIBRARY_PATH" value="/home/inji2/control_ws/devel/lib:/home/inji2/catkin_ws/devel/lib:/opt/ros/noetic/lib:/opt/ros/noetic/lib/x86_64-linux-gnu"/>
   <node pkg="aisw_2026" type="master_v2.py" name="master_controller_node"
         output="screen" respawn="true" cwd="node"/>
   <node pkg="aisw_2026" type="lattice_planner_v2.py" name="lattice_planner"
