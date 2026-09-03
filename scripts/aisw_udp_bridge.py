@@ -112,7 +112,7 @@ class Bridge:
         # '#MoraiCtrlCmd$' + int32 len(23) + aux12 + [mode u8, gear u8, cmdType u8, vel f, accval f, accel f, brake f, steer f] + \r\n
         data = struct.pack('<BBB5f', self.cmode, self.gear,
                            m.longlCmdType if m.longlCmdType else 1,
-                           m.velocity, m.acceleration, m.accel, m.brake, m.steering)
+                           m.velocity, m.acceleration, m.accel, m.brake, -m.steering)  # [2026_AISW] MORAI 조향부호 반대 → 반전(실측: 우회전 명령에 차가 좌로 감)
         pkt = b'#MoraiCtrlCmd$' + struct.pack('<i', len(data)) + b'\x00'*12 + data + b'\r\n'
         try: self.tx.sendto(pkt, self.ctrl_to)
         except OSError: pass
