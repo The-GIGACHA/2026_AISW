@@ -1,0 +1,16 @@
+<!-- [2026_AISW] 중간점검용 통합 런치: UDP 게이트웨이 + LiDAR 장애물 + 제어 스택 v2 -->
+<launch>
+  <arg name="sim_ip" default="127.0.0.1"/>  <!-- 대회 당일 시뮬 PC IP로 변경 -->
+
+  <node pkg="aisw_2026" type="aisw_udp_bridge.py" name="aisw_udp_bridge" output="screen">
+    <param name="sim_ip" value="$(arg sim_ip)"/>
+  </node>
+
+  <node pkg="aisw_2026" type="aisw_lidar_obstacles.py" name="aisw_lidar_obstacles" output="screen"/>
+
+  <env name="PYTHONUNBUFFERED" value="1"/>
+  <node pkg="aisw_2026" type="master_v2.py" name="master_controller_node"
+        output="screen" respawn="true" required="true" cwd="node"/>
+  <node pkg="aisw_2026" type="lattice_planner_v2.py" name="lattice_planner"
+        output="screen" respawn="true" cwd="node"/>
+</launch>

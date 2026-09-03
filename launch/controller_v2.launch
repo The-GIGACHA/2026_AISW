@@ -1,0 +1,26 @@
+<launch>
+  <!-- 패키지명: 폴더명과 동일하다고 가정 -->
+  <arg name="pkg" default="aisw_2026"/>
+
+  <!-- 파이썬 출력 버퍼링 끄기 (로그 실시간 출력) -->
+  <env name="PYTHONUNBUFFERED" value="1"/>
+
+  <!-- Master: 내부에서 Morai_Control_Node 스레드까지 실행 -->
+  <node pkg="$(arg pkg)"
+        type="master_v2.py"
+        name="master_controller_node"
+        output="screen"
+        respawn="true"
+        required="true"
+        cwd="node">
+  </node>
+
+  <!-- Lattice Planner v2 -->
+  <node pkg="$(arg pkg)"
+        type="lattice_planner_v2.py"
+        name="lattice_planner"
+        output="screen"
+        respawn="true"
+        cwd="node">
+  </node>
+</launch>
