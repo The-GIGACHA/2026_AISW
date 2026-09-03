@@ -82,7 +82,25 @@ class Bridge:
                                 (9293, '/image_jpeg_left/compressed'),
                                 (9295, '/image_jpeg_right/compressed')):
                 self.spawn(self.loop_cam, port, topic)
+        # [2026_AISW] 제어 두절 워치독: /ctrl_cmd 0.6초 이상 끊기면 정지 패킷 송신 (노드 재시작 중 마지막 명령 래치 방지)
+        self._last_ctrl_t = None
+        rospy.Timer(rospy.Duration(0.1), self._watchdog)
+        rospy.on_shutdown(self._send_stop_burst)
         rospy.loginfo('[aisw_udp_bridge] 시작 — 시뮬 %s, ctrl->%s', self.sim_ip, self.ctrl_to)
+
+    def _stop_pkt(self):
+        data = struct.pack('<BBB5f', self.cmode, self.gear, 1, 0.0, 0.0, 0.0, 0.6, 0.0)
+        return b'#MoraiCtrlCmd$' + struct.pack('<i', len(data)) + b'\x00'*12 + data + b'\r\n'
+
+    def _watchdog(self, _evt):
+        if self._last_ctrl_t is not None and (rospy.Time.now() - self._last_ctrl_t).to_sec() > 0.6:
+            try: self.tx.sendto(self._stop_pkt(), self.ctrl_to)
+            except OSError: pass
+
+    def _send_stop_burst(self):
+        for _ in range(5):
+            try: self.tx.sendto(self._stop_pkt(), self.ctrl_to)
+            except OSError: pass
 
     def spawn(self, fn, *a):
         t = threading.Thread(target=fn, args=a, daemon=True)
@@ -90,6 +108,7 @@ class Bridge:
 
     # ---------- ROS -> UDP : Ego Ctrl Cmd ----------
     def cb_ctrl(self, m):
+        self._last_ctrl_t = rospy.Time.now()
         # '#MoraiCtrlCmd$' + int32 len(23) + aux12 + [mode u8, gear u8, cmdType u8, vel f, accval f, accel f, brake f, steer f] + \r\n
         data = struct.pack('<BBB5f', self.cmode, self.gear,
                            m.longlCmdType if m.longlCmdType else 1,

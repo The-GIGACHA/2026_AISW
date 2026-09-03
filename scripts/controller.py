@@ -203,16 +203,9 @@ class PurePursuit_Control:
             self.ego_vel = ego_vel
             self.target_vel = curvedvelocity
 
-            if abs(self.ego_vel) > 40.0 / 3.6:
-                self.lfd = 22   # 11.0m
-            elif abs(self.ego_vel) > 20.0 / 3.6:
-                self.lfd = 18   # 9.0m
-            elif abs(self.ego_vel) > 18.0 / 3.6:
-                self.lfd = 14   # 7.0m
-            elif abs(self.ego_vel) > 15.0 / 3.6:
-                self.lfd = 12   # 6.0m
-            elif abs(self.ego_vel) > 10.0 / 3.6:
-                self.lfd = 5   # 5.0m
+            # [2026_AISW] 거리 기반 연속 룩어헤드: L=0.6v+3.0 (4~12m), 로컬경로 0.5m 간격
+            _L = min(max(0.6 * abs(self.ego_vel) + 3.0, 4.0), 12.0)
+            self.lfd = max(int(_L / 0.5), 8)
      
             # self.target_vel = self.path.cv[self.ego_ind]
             self.target_ind = self.ego_ind + self.lfd
@@ -236,9 +229,12 @@ class PurePursuit_Control:
                 steering_rad = math.atan2(2.0 * self.wb * math.sin(alpha), lookahed_distance)
 
             steering_deg = self.normalize_180(math.degrees(steering_rad))
-            # print(self.target_vel)
-            # print(steering_deg)
-            return np.clip(abs(self.target_vel), 0.2, Parameter.max_velocity), np.clip(steering_deg, -40.0, 40.0)
+            # [2026_AISW] 조향 EMA(α=0.45) + 변화율 제한(사이클당 4도@15Hz≈60도/s) — 위빙 억제
+            prev = getattr(self, '_steer_filt', 0.0)
+            filt = 0.45 * steering_deg + 0.55 * prev
+            filt = prev + np.clip(filt - prev, -4.0, 4.0)
+            self._steer_filt = filt
+            return np.clip(abs(self.target_vel), 0.2, Parameter.max_velocity), np.clip(filt, -40.0, 40.0)
     
 # Trottle제어기
 class AccelCmd_Converter:
