@@ -81,9 +81,13 @@ def process(pts, pub, GRID, MINP, LX):
         if len(sel)<MINP: continue
         lo=sel.min(0); hi=sel.max(0)
         if (hi[0]-lo[0])>8 or (hi[1]-lo[1])>8: continue  # 벽/가드레일 제외
+        cx0=float((lo[0]+hi[0])/2 + LX); cy0=float((lo[1]+hi[1])/2)
+        # [2026_AISW] 경로 근처만: 전방 0.5~25m, 측면 |y|<4m (도로변 가로등/신호등/표지판 오탐 제거)
+        if not (0.5 < cx0 < 25.0 and abs(cy0) < 4.0):
+            continue
         det=Detection3D()
-        det.bbox.center.position.x=float((lo[0]+hi[0])/2 + LX)  # 라이다→후륜축 프레임
-        det.bbox.center.position.y=float((lo[1]+hi[1])/2)
+        det.bbox.center.position.x=cx0  # 라이다→후륜축 프레임
+        det.bbox.center.position.y=cy0
         det.bbox.center.orientation.w=1.0
         det.bbox.size.x=float(max(hi[0]-lo[0],0.3)); det.bbox.size.y=float(max(hi[1]-lo[1],0.3)); det.bbox.size.z=float(max(hi[2]-lo[2],0.3))
         h=ObjectHypothesisWithPose(); h.id=tid; h.score=1.0; det.results.append(h)
