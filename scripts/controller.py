@@ -228,11 +228,22 @@ class PurePursuit_Control:
             else:
                 steering_rad = math.atan2(2.0 * self.wb * math.sin(alpha), lookahed_distance)
 
+            # [2026_AISW] 횡편차(cross-track) 복귀항 — 순수추종이 평행이탈을 못 잡는 문제 해결
+            try:
+                px = self.path.cx[self.ego_ind]; py = self.path.cy[self.ego_ind]
+                pyaw = math.radians(self.path.cyaw[self.ego_ind])
+                e_ct = -math.sin(pyaw) * (self.ego_x - px) + math.cos(pyaw) * (self.ego_y - py)  # 경로 왼쪽 +
+                v_ct = max(abs(self.ego_vel), 2.0)
+                cross_rad = math.atan2(0.45 * e_ct, v_ct)   # 왼쪽 이탈이면 +, 우회전(-)으로 복귀
+                steering_rad = steering_rad - cross_rad
+            except Exception:
+                pass
+
             steering_deg = self.normalize_180(math.degrees(steering_rad))
-            # [2026_AISW] 조향 EMA(α=0.45) + 변화율 제한(사이클당 4도@15Hz≈60도/s) — 위빙 억제
+            # [2026_AISW] 조향 EMA(α=0.45) + 변화율 제한(사이클당 8도@15Hz≈120도/s) — 위빙 억제하되 복귀조향 허용
             prev = getattr(self, '_steer_filt', 0.0)
             filt = 0.45 * steering_deg + 0.55 * prev
-            filt = prev + np.clip(filt - prev, -4.0, 4.0)
+            filt = prev + np.clip(filt - prev, -8.0, 8.0)
             self._steer_filt = filt
             return np.clip(abs(self.target_vel), 0.2, Parameter.max_velocity), np.clip(filt, -40.0, 40.0)
     
