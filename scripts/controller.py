@@ -235,7 +235,7 @@ class PurePursuit_Control:
                 e_ct = -math.sin(pyaw) * (self.ego_x - px) + math.cos(pyaw) * (self.ego_y - py)  # 경로 왼쪽 +
                 v_ct = max(abs(self.ego_vel), 2.0)
                 cross_rad = math.atan2(0.45 * e_ct, v_ct)   # 왼쪽 이탈이면 +, 우회전(-)으로 복귀
-                steering_rad = steering_rad - cross_rad
+                steering_rad = steering_rad + cross_rad  # [부호수정] 실측상 - 는 발산 → +
             except Exception:
                 pass
 
