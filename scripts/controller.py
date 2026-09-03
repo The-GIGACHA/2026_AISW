@@ -466,6 +466,7 @@ class Morai_Control_Node:
         # print(self.ego_vel)
 
     def gps_callback(self, msg):
+        self._last_gps_t = rospy.get_time()  # [2026_AISW] GPS 신선도 추적
         """
         차량 후륜중심 (x:0.0, y:0.0, z:1.2) / 30Hz
         """
@@ -818,6 +819,20 @@ class Morai_Control_Node:
                         # 아직 속도가 있으면 계속 제동
                         rate.sleep()
                         continue
+
+                # [2026_AISW] GPS 음영/두절 대응: 0.7~3초 두절=직진 크리프, 3초 초과=정지
+                _gps_age = rospy.get_time() - getattr(self, '_last_gps_t', 0.0)
+                if getattr(self, '_last_gps_t', 0.0) > 0.0 and _gps_age > 0.7:
+                    self.ctrl_cmd_msg.steering = 0.0
+                    if _gps_age > 3.0:
+                        self.ctrl_cmd_msg.accel = 0.0; self.ctrl_cmd_msg.brake = 0.6
+                        rospy.logwarn_throttle(2.0, '[GPS두절 %.1fs] 정지 유지', _gps_age)
+                    else:
+                        self.ctrl_cmd_msg.accel = 0.12; self.ctrl_cmd_msg.brake = 0.0
+                        rospy.logwarn_throttle(1.0, '[GPS음영 %.1fs] 직진 크리프', _gps_age)
+                    self.ctrl_cmd_pub.publish(self.ctrl_cmd_msg)
+                    rate.sleep()
+                    continue
 
                 if not (self.odom_flag and self.gps_flag and self.imu_flag):
                     print("Waiting for GPS and IMU...")
