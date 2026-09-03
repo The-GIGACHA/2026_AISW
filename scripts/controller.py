@@ -549,7 +549,8 @@ class Morai_Control_Node:
         self.pending_stamp = rospy.get_time()
 
         # 첫 경로가 아직 없으면 즉시 채택(시동 단계에서만)
-        if self.local_path is None:
+        # [2026_AISW] 10점 미만 퇴화 경로는 채택 금지 (1점 경로 추적 사고 방지)
+        if self.local_path is None and self.pending_local_path.length >= 10:
             self.local_path = self.pending_local_path
             self.has_pending = False
             self.local_path_flag = True

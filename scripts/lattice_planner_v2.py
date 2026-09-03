@@ -1076,6 +1076,13 @@ class LatticePlanner:
         # 바로 x,y 슬라이싱
         xs = XY[i0:i1, 0].tolist()
         ys = XY[i0:i1, 1].tolist()
+        # [2026_AISW] 폐루프 랩어라운드: 시작=끝 폐루프에서 ego_s가 s_max 근처로 잡히면
+        # 세그먼트가 0~1점으로 퇴화(→PP가 시작점 한 점을 쫓아 도로 이탈, 실측 사고) → 앞부분에서 이어붙임
+        need = int(Parameter.lookahead_distance / self.search_ds)
+        if len(xs) < need:
+            wrap = need - len(xs)
+            xs += XY[:wrap, 0].tolist()
+            ys += XY[:wrap, 1].tolist()
         return xs, ys
 
     # (s, d) 최종경로를 (x, y)로 변환
