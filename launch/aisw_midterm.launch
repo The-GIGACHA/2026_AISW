@@ -10,7 +10,7 @@
 
   <env name="PYTHONUNBUFFERED" value="1"/>
   <node pkg="aisw_2026" type="master_v2.py" name="master_controller_node"
-        output="screen" respawn="true" required="true" cwd="node"/>
+        output="screen" respawn="true" cwd="node"/>
   <node pkg="aisw_2026" type="lattice_planner_v2.py" name="lattice_planner"
         output="screen" respawn="true" cwd="node"/>
 </launch>
