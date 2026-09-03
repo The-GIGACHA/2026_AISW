@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/inji2/.local/rospython/python3
 # -*- coding: utf-8 -*-
 """
 2026 국토부 AI/SW 모빌리티 경진대회용 UDP <-> ROS 게이트웨이 (팀 PC에서 실행)

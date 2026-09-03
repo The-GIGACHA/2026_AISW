@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/inji2/.local/rospython/python3
 # -*- coding: utf-8 -*-
 try:
     profile  # kernprof -l 로 실행하면 builtins에 주입됨

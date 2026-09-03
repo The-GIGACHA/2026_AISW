@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/inji2/.local/rospython/python3
 # -*- coding: utf-8 -*-
 """
 [2026_AISW] VLP16 UDP → 간이 클러스터링 → /tracked_objects_3d (Detection3DArray)
