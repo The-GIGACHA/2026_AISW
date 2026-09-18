@@ -1,7 +1,10 @@
 <!-- [2026_AISW] 중간점검용 통합 런치: UDP 게이트웨이 + LiDAR 장애물 + 제어 스택 v2 -->
 <launch>
-  <arg name="sim_ip" default="127.0.0.1"/>  <!-- 대회 당일 시뮬 PC IP로 변경 -->
-  <!-- 노드 셔뱅(/home/inji2/.local/rospython/python3)이 없는 PC에서는 python:=/usr/bin/python3 (cwd="node" 때문에 절대경로) -->
+  <!-- 시뮬 PC IP (ctrl_cmd 송신 대상). 수신은 0.0.0.0 바인딩이라 무관.
+       현재 LAN: 팀 PC 192.168.0.10(enp3s0) <-> 시뮬 192.168.0.1.
+       다른 환경이면 sim_ip:=<IP> 로 덮어쓰기 -->
+  <arg name="sim_ip" default="192.168.0.1"/>
+  <!-- 노드 셔뱅이 다른 PC 경로인 경우 python:=/usr/bin/python3 (cwd="node" 때문에 절대경로) -->
   <arg name="python" default=""/>
   <!-- UDP 2368을 직접 수신 → velodyne 드라이버와 포트 충돌. 필요 시 lidar_obstacles:=true -->
   <arg name="lidar_obstacles" default="false"/>
