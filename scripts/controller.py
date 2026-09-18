@@ -203,18 +203,18 @@ class PurePursuit_Control:
             self.ego_vel = ego_vel
             self.target_vel = curvedvelocity
 
-            # [2026_AISW] 거리 기반 연속 룩어헤드: L=0.6v+3.0 (4~12m), 로컬경로 0.5m 간격
+            # [2026_AISW] 거리 기반 연속 룩어헤드: L=0.6v+3.0 (4~12m)
+            # 경로를 따라 실제 누적거리로 목표점 탐색 — 로컬경로 실제 간격은 0.25m라
+            # 0.5m 가정(int(L/0.5))이면 룩어헤드가 절반(5.5m/s에서 3m)이 되어 위빙 발생했음
             _L = min(max(0.6 * abs(self.ego_vel) + 3.0, 4.0), 12.0)
-            self.lfd = max(int(_L / 0.5), 8)
-     
+            ti, acc = self.ego_ind, 0.0
+            while ti < self.path.length - 1 and acc < _L:
+                acc += math.hypot(self.path.cx[ti + 1] - self.path.cx[ti], self.path.cy[ti + 1] - self.path.cy[ti])
+                ti += 1
+            self.lfd = ti - self.ego_ind
+
             # self.target_vel = self.path.cv[self.ego_ind]
-            self.target_ind = self.ego_ind + self.lfd
-
-            # print(self.lfd)
-            # print(self.target_ind)
-
-            if self.target_ind >= self.path.length:
-                self.target_ind = self.path.length - 1
+            self.target_ind = ti
 
             self.target_x = self.path.cx[self.target_ind]
             self.target_y = self.path.cy[self.target_ind]

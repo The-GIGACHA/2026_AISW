@@ -1,4 +1,4 @@
-#!/home/inji2/.local/rospython/python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 2026 국토부 AI/SW 모빌리티 경진대회용 UDP <-> ROS 게이트웨이 (팀 PC에서 실행)
@@ -10,7 +10,7 @@
   IMU   127.0.0.1:9283  '#IMUData$'      -> /imu (sensor_msgs/Imu)
   CAM   127.0.0.1:9291/9293/9295 (JPEG 조각) -> /image_jpeg{,_left,_right}/compressed  (cam:=true 일 때)
   COLL  127.0.0.1:9092  CollisionData    -> 로그 출력(포맷 덤프)
-  COMP  127.0.0.1:9087  CompetitionInfo  -> 로그 출력(포맷 덤프)
+  STAT  127.0.0.1:909   '#MoraiInfo$' Competition Vehicle Status (MORAI 기본 host 908 -> dest 909) -> /Competition_topic velocity.x (vel_x)
 송신(ROS -> UDP):
   /ctrl_cmd (morai_msgs/CtrlCmd) -> '#MoraiCtrlCmd$' -> 시뮬 127.0.0.1:9093
 
@@ -22,19 +22,23 @@
   ~ctrl_port 9093 | ~gps_port 9281 | ~imu_port 9283 | ~cam(false) | ~dump(true)
   ~east_offset / ~north_offset : GPSMessage offset (NMEA에는 없어 파라미터로 주입.
       연습 시 ROS 모드 /gps 의 eastOffset/northOffset 값을 확인해 넣을 것)
-  ~gear 4(D) | ~ctrl_mode 2(AutoMode)
+  ~gear 4(D) | ~ctrl_mode 2(AutoMode) | ~steer_scale 1/0.575 (MORAI 조향 이득 보상)
 * LiDAR(VLP16)는 velodyne 표준 패킷(포트 2368)이라 velodyne 드라이버 사용:
   roslaunch velodyne_pointcloud VLP16_points.launch device_ip:="" port:=2368
 """
 import socket, struct, threading, math
+from collections import deque
 import rospy
 from sensor_msgs.msg import Imu, CompressedImage
 from morai_msgs.msg import GPSMessage, CtrlCmd, EgoVehicleStatus
 from pyproj import Proj
+from morai_camera import JpegAssembler
 
 def udp_sock(port):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # [2026_AISW] LAN 수신 대비 버퍼 8MB 요청 (카메라 65KB datagram). 실제 상한은 net.core.rmem_max
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
     s.settimeout(1.0)
     s.bind(('0.0.0.0', port))
     return s
@@ -58,15 +62,21 @@ class Bridge:
         self.eoff     = float(gp('east_offset', 302595.0))   # K-City 2025 mgeo local_origin (global_info.json)
         self.noff     = float(gp('north_offset', 4124145.0))
         self.gear     = int(gp('gear', 4))        # 1P 2R 3N 4D
+        # [2026_AISW] MORAI 유효 조향각 = 0.575 x 명령 (실측: yaw rate = 0.57*v*tan(cmd)/wb, 명령 3~40deg 전 구간 비율 0.57~0.59, 지연 0.2s)
+        # 보상 안 하면 조향 부족 → 급커브(R8~10m)에서 바깥으로 1~1.5m 밀림
+        self.steer_scale = float(gp('steer_scale', 1.0 / 0.575))
         self.cmode    = int(gp('ctrl_mode', 2))   # 2=AutoMode
         self.dump     = bool(gp('dump', True))
         self.use_cam  = bool(gp('cam', False))
 
         self.pub_gps = rospy.Publisher('/gps', GPSMessage, queue_size=1)
-        # CompetitionInfo UDP 패킷 포맷 확정 전까지 GPS 미분으로 속도 추정해 /Competition_topic 대체 발행
+        # /Competition_topic: 위치=GPS(규정상 Status에 pos 없음), 속도=Competition Vehicle Status vel_x
+        # (Status 0.5초 이상 끊기면 GPS 0.5초 창 추정속도로 대체)
         self.pub_comp = rospy.Publisher('/Competition_topic', EgoVehicleStatus, queue_size=1) if gp('pub_competition', True) else None
         self._utm = Proj(proj='utm', zone=52, ellps='WGS84', preserve_units=False)
-        self._prev_fix = None  # (t, ex, ny)
+        self._fix_hist = deque()  # (t, ex, ny) 최근 GPS 위치 — 속도 추정 창
+        self._v_ema = 0.0
+        self._status_vel = None  # (수신시각, vel_x [m/s])
         self.pub_imu = rospy.Publisher('/imu', Imu, queue_size=1)
         self.tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         rospy.Subscriber('/ctrl_cmd', CtrlCmd, self.cb_ctrl, queue_size=1)
@@ -74,9 +84,9 @@ class Bridge:
         self.threads = []
         self.spawn(self.loop_gps, int(gp('gps_port', 9281)))
         self.spawn(self.loop_imu, int(gp('imu_port', 9283)))
+        self.spawn(self.loop_status, int(gp('status_port', 909)))
         if self.dump:
             self.spawn(self.loop_dump, 9092, 'CollisionData')
-            self.spawn(self.loop_dump, 9087, 'CompetitionInfo')
         if self.use_cam:
             for port, topic in ((9291, '/image_jpeg/compressed'),
                                 (9293, '/image_jpeg_left/compressed'),
@@ -112,7 +122,7 @@ class Bridge:
         # '#MoraiCtrlCmd$' + int32 len(23) + aux12 + [mode u8, gear u8, cmdType u8, vel f, accval f, accel f, brake f, steer f] + \r\n
         data = struct.pack('<BBB5f', self.cmode, self.gear,
                            m.longlCmdType if m.longlCmdType else 1,
-                           m.velocity, m.acceleration, m.accel, m.brake, -m.steering)  # [2026_AISW] MORAI 조향부호 반대 → 반전(실측: 우회전 명령에 차가 좌로 감)
+                           m.velocity, m.acceleration, m.accel, m.brake, m.steering * self.steer_scale)  # [2026_AISW] 반전 제거: 실측(25.S4.MolitComp03) 패킷 steering +0.3 → yaw +59° 좌회전, ROS 규약(+좌)과 동일
         pkt = b'#MoraiCtrlCmd$' + struct.pack('<i', len(data)) + b'\x00'*12 + data + b'\r\n'
         try: self.tx.sendto(pkt, self.ctrl_to)
         except OSError: pass
@@ -136,6 +146,11 @@ class Bridge:
                     msg.longitude = nmea_deg(f[4], f[5])
                     msg.altitude  = float(f[9]) if f[9] else 0.0
                 except ValueError: continue
+                # [2026_AISW] GPS 음영(제밍)구역: MORAI가 '0000.0000,N,00000.0000,E'(RMC는 A=유효)를 계속 송신
+                # → (0,0)을 발행하면 자차가 수천km 밖으로 튀어 풀가속/최대조향 발생했음. 발행 중단 → 제어기 GPS두절 로직(크리프/정지) 동작
+                if msg.latitude == 0.0 or msg.longitude == 0.0:
+                    rospy.logwarn_throttle(2.0, '[aisw_udp_bridge] GPS 좌표 0 (음영구역) — /gps 발행 중단')
+                    continue
                 msg.eastOffset, msg.northOffset = self.eoff, self.noff
                 msg.status = 1
                 self.pub_gps.publish(msg)
@@ -145,15 +160,40 @@ class Bridge:
                     t = msg.header.stamp.to_sec()
                     ego = EgoVehicleStatus(); ego.header.stamp = msg.header.stamp
                     ego.position.x, ego.position.y, ego.position.z = ex, ny, msg.altitude
-                    if self._prev_fix is not None and t > self._prev_fix[0]:
-                        dt = t - self._prev_fix[0]
-                        if dt < 1.0:
-                            raw_v = ((ex-self._prev_fix[1])**2 + (ny-self._prev_fix[2])**2) ** 0.5 / dt  # m/s
-                            # [2026_AISW] EMA 저역필터 — 미분 노이즈가 PID D항 채터링(브레이크등 점멸) 유발 방지
-                            self._v_ema = 0.25*raw_v + 0.75*getattr(self, '_v_ema', raw_v)
-                            ego.velocity.x = self._v_ema
-                    self._prev_fix = (t, ex, ny)
+                    # [2026_AISW] 속도 = 0.5초 창 변위/시간. NMEA 해상도(~0.2m)+동일 fix 반복(약 25%) 때문에
+                    # 인접 fix 미분은 0~19m/s로 튐 → PID D항 채터링(accel/brake 반복) 원인이었음
+                    hist = self._fix_hist
+                    hist.append((t, ex, ny))
+                    while len(hist) > 2 and t - hist[1][0] >= 0.5:
+                        hist.popleft()
+                    span = t - hist[0][0]
+                    if span > 1.0:  # GPS 두절 후 재개: 창 초기화
+                        hist.clear(); hist.append((t, ex, ny)); self._v_ema = 0.0
+                    elif span >= 0.3:
+                        raw_v = ((ex-hist[0][1])**2 + (ny-hist[0][2])**2) ** 0.5 / span  # m/s
+                        self._v_ema = 0.5*raw_v + 0.5*self._v_ema
+                    st = self._status_vel
+                    ego.velocity.x = st[1] if st is not None and t - st[0] < 0.5 else self._v_ema
                     self.pub_comp.publish(ego)
+
+    # ---------- Competition Vehicle Status ----------
+    def loop_status(self, port):
+        # '#MoraiInfo$'(11) + int32 len(152) + aux12 + data152 + '\r\n' = 181B
+        # data: sec,nsec,ctrl_mode,gear,signed_vel,map_id,accel,brake,size3,overhang,wheelbase,rear_overhang(@0..49)
+        #       pos3(@50, 규정상 0) rpy3(@62, deg) vel3(@74, km/h, vel_x만 제공) ang_vel3(@86) accel3(@98, 0) steer(@110) link_id(@114)
+        try: s = udp_sock(port)
+        except OSError as e:
+            # 909는 1024 미만 특권포트 → sysctl net.ipv4.ip_unprivileged_port_start=908 필요
+            rospy.logerr('[aisw_udp_bridge] Status 포트 %d bind 실패(%s) — GPS 추정속도로 대체. '
+                         'sudo sysctl -w net.ipv4.ip_unprivileged_port_start=908', port, e)
+            return
+        while not rospy.is_shutdown():
+            try: raw, _ = s.recvfrom(65535)
+            except socket.timeout: continue
+            except OSError: break
+            if raw[0:11] != b'#MoraiInfo$' or len(raw) < 27 + 114: continue
+            # vel_x 단위 km/h (실측: GPS 1초 변위 속도 대비 정확히 3.6배) -> m/s
+            self._status_vel = (rospy.Time.now().to_sec(), struct.unpack_from('<f', raw, 27 + 74)[0] / 3.6)
 
     # ---------- IMU ----------
     def loop_imu(self, port):
@@ -171,23 +211,25 @@ class Bridge:
             m.linear_acceleration.x, m.linear_acceleration.y, m.linear_acceleration.z = d[7], d[8], d[9]
             self.pub_imu.publish(m)
 
-    # ---------- Camera: JPEG 조각 (tail 'EI'가 마지막) ----------
+    # ---------- Camera: MORAI JPEG 조각 조립 (JpegAssembler) ----------
     def loop_cam(self, port, topic):
         pub = rospy.Publisher(topic, CompressedImage, queue_size=1)
         s = udp_sock(port)
-        buf = b''
+        asm = JpegAssembler(); reported = 0
         while not rospy.is_shutdown():
-            try: raw, _ = s.recvfrom(65000)
-            except socket.timeout: buf = b''; continue
+            try: raw, _ = s.recvfrom(65535)
+            except socket.timeout: asm.reset(); continue
             except OSError: break
-            if len(raw) < 21: continue
-            buf += raw[19:-2]
-            if raw[-2:] == b'EI':
-                m = CompressedImage()
-                m.header.stamp = rospy.Time.now()
-                m.format = 'jpeg'; m.data = buf
-                pub.publish(m)
-                buf = b''
+            frame = asm.feed(raw)
+            if asm.dropped != reported:
+                reported = asm.dropped
+                rospy.logwarn_throttle(5.0, '[aisw_udp_bridge] %s 손실 프레임 누적 %d / 정상 %d', topic, asm.dropped, asm.frames)
+            if frame is None: continue
+            m = CompressedImage()
+            m.header.stamp = rospy.Time.now()
+            m.header.frame_id = topic.split('/')[1]
+            m.format = 'jpeg'; m.data = frame[2]
+            pub.publish(m)
 
     # ---------- 미해석 채널 덤프(포맷 확인용) ----------
     def loop_dump(self, port, name):
