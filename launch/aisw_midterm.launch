@@ -1,18 +1,28 @@
 <!-- [2026_AISW] 중간점검용 통합 런치: UDP 게이트웨이 + LiDAR 장애물 + 제어 스택 v2 -->
 <launch>
   <arg name="sim_ip" default="127.0.0.1"/>  <!-- 대회 당일 시뮬 PC IP로 변경 -->
+  <!-- 노드 셔뱅(/home/inji2/.local/rospython/python3)이 없는 PC에서는 python:=/usr/bin/python3 (cwd="node" 때문에 절대경로) -->
+  <arg name="python" default=""/>
+  <!-- UDP 2368을 직접 수신 → velodyne 드라이버와 포트 충돌. 필요 시 lidar_obstacles:=true -->
+  <arg name="lidar_obstacles" default="false"/>
+  <!-- MORAI 조향 이득 보상 = 1/실측이득 (로컬 25.S4.MolitComp03: 이득 0.575). 현장은 tools/morai_site_check.py 조향 모드로 재측정 -->
+  <arg name="steer_scale" default="1.7391"/>
+  <!-- 카메라 3대 UDP 9291/9293/9295 -> /image_jpeg{,_left,_right}/compressed 발행 (녹화/인지 개발용) -->
+  <arg name="cam" default="false"/>
 
-  <node pkg="aisw_2026" type="aisw_udp_bridge.py" name="aisw_udp_bridge" output="screen" respawn="true">
+  <node pkg="aisw_2026" type="aisw_udp_bridge.py" launch-prefix="$(arg python)" name="aisw_udp_bridge" output="screen" respawn="true">
     <param name="sim_ip" value="$(arg sim_ip)"/>
+    <param name="steer_scale" value="$(arg steer_scale)"/>
+    <param name="cam" value="$(arg cam)"/>
   </node>
 
-  <node pkg="aisw_2026" type="aisw_lidar_obstacles.py" name="aisw_lidar_obstacles" output="screen" respawn="true"/>
+  <node pkg="aisw_2026" type="aisw_lidar_obstacles.py" launch-prefix="$(arg python)" name="aisw_lidar_obstacles" output="screen" respawn="true" if="$(arg lidar_obstacles)"/>
 
   <env name="PYTHONUNBUFFERED" value="1"/>
   <!-- 환경변수 스트리핑 대비: ROS 공유 라이브러리 경로 명시 -->
-  <env name="LD_LIBRARY_PATH" value="/home/inji2/control_ws/devel/lib:/home/inji2/catkin_ws/devel/lib:/opt/ros/noetic/lib:/opt/ros/noetic/lib/x86_64-linux-gnu"/>
-  <node pkg="aisw_2026" type="master_v2.py" name="master_controller_node"
+  <env name="LD_LIBRARY_PATH" value="$(env HOME)/control_ws/devel/lib:$(env HOME)/26aisw_lidar_ws/devel/lib:/opt/ros/noetic/lib:/opt/ros/noetic/lib/x86_64-linux-gnu"/>
+  <node pkg="aisw_2026" type="master_v2.py" launch-prefix="$(arg python)" name="master_controller_node"
         output="screen" respawn="true" cwd="node"/>
-  <node pkg="aisw_2026" type="lattice_planner_v2.py" name="lattice_planner"
+  <node pkg="aisw_2026" type="lattice_planner_v2.py" launch-prefix="$(arg python)" name="lattice_planner"
         output="screen" respawn="true" cwd="node"/>
 </launch>
