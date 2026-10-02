@@ -30,6 +30,8 @@ from scipy.interpolate import CubicSpline
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 
+from aisw_common import load_map_fields, nearest_index_global, NearestIndexer, ros_sections, get_section
+
 class Parameter:
     # 아이오닉5 모델 스펙
     vehicle_wheelbase = 3.000       # 차량 휠베이스 [m]
@@ -264,7 +266,9 @@ class AccelCmd_Converter:
         # print(current_vel)
         # print(error)
         p_control = self.p_gain * error
-        if error <= 5 and abs(self.output) < 1.0:
+        # [2026_AISW] 조건부 적분은 |오차| 기준 — 부호 있는 error<=5 는 큰 감속 오차(음수)에서도
+        # 적분이 계속 쌓여 재출발 시 가속이 늦어지는 windup 을 막지 못했다.
+        if abs(error) <= 5 and abs(self.output) < 1.0:
             self.i_control += self.i_gain * error * self.controlTime
         d_control = self.d_gain * (error-self.prev_error) / self.controlTime
         self.output = p_control + self.i_control + d_control
@@ -377,6 +381,8 @@ class Morai_Control_Node:
         # 맵 인덱스 clamp & 현재 ref_path 설정
         self.map_index = max(0, min(self.initial_map_index, len(self.all_paths)-1))
         self.ref_path  = self.all_paths[self.map_index]
+        # [2026_AISW] 전역경로 인덱스는 직전 인덱스 주변 창에서만 탐색 (루프 끝에서 0 으로 되감기 방지)
+        self.global_indexer = NearestIndexer(self.ref_path.cx, self.ref_path.cy)
 
         # ================= RViz용 Publisher 추가 =================
         # self.map_marker_pub = rospy.Publisher("/ref_path_marker", MarkerArray, queue_size=1)
@@ -434,7 +440,9 @@ class Morai_Control_Node:
         self.jamming_mode_active = False
 
         # 인덱스 1633에서 장애물 토픽 기반 정지 관련
-        self.stop_index_1633 = rospy.get_param('~obstacle_stop_index', -1)  # [2026_AISW] 옛 상암맵 1631 → 기본 비활성(-1)
+        # [2026_AISW] 옛 상암맵 1631 → 기본 비활성(-1). config/kcity_sections.yaml 의 obstacle_stop_index, ~파라미터가 우선
+        self.stop_index_1633 = rospy.get_param('~obstacle_stop_index',
+                                               int(get_section(ros_sections(), 'obstacle_stop_index', -1)))
         self.is_stop_completed_1633 = False
         self.stop_started_1633 = False
         self.braking_started_1633 = False
@@ -452,9 +460,6 @@ class Morai_Control_Node:
         self.cmd_converter = AccelCmd_Converter(self.rate_hz)
         self.purepursuit_controller = PurePursuit_Control(self.ref_path)
         self.curvebased_vel = CurvedBased_Velocity(self.ref_path)
-
-        # Lattice planner 참조 (s 계산용)
-        self.lattice_planner = None  # master에서 설정
 
         # 독립적인 Frenet 좌표계 (1633 인덱스 장애물 체크용)
         self.frenet_coord = None  # 첫 사용 시 초기화
@@ -712,32 +717,12 @@ class Morai_Control_Node:
 
     # json파일 불러와 ref 정보 PATH객체로 저장
     def load_ref_map(self, json_file):
-        with open(json_file, 'r') as f:
-                data = json.load(f)
-
-        keys = sorted(data.keys(), key=lambda k: int(k))
-
-        rx      = [data[k]['x']         for k in keys]
-        ry      = [data[k]['y']         for k in keys]
-        ryaw    = [data[k]['yaw']       for k in keys]
-        rk      = [data[k]['curvature'] for k in keys]
-        rvel    = [data[k]['velocity']  for k in keys]
-        rm      = [data[k]['mission']   for k in keys]
-        rgear   = [data[k]['gear']      for k in keys]
-
-        self.ref_path = PATH(rx, ry, ryaw, rk, rvel, rm, rgear)
-
+        self.ref_path = PATH(*load_map_fields(json_file))
         return self.ref_path
 
-    # 현재 위치의 경로에서의 인덱스 검색
+    # 현재 위치의 경로에서의 인덱스 검색 (로컬경로처럼 매번 바뀌는 짧은 경로용 전체 탐색)
     def nearest_index(self, path, ego_x, ego_y):
-        dx = [ego_x - x for x in path.cx]
-        dy = [ego_y - y for y in path.cy]
-        dist = np.hypot(dx, dy)
-
-        ind = int(np.argmin(dist))
-
-        return ind
+        return nearest_index_global(path.cx, path.cy, ego_x, ego_y)
 
     def normalize_180(self, deg):
         """Normalize angle to be within [-180, 180) degrees."""
@@ -893,7 +878,7 @@ class Morai_Control_Node:
                 # ref_path  rviz 시각화
                 # self.publish_map_marker(self.ref_path)
 
-                self.ego_index_global = self.nearest_index(self.ref_path, self.ego_x, self.ego_y)
+                self.ego_index_global = self.global_indexer.find(self.ego_x, self.ego_y)
                 self.ego_index_local = self.nearest_index(self.local_path, self.ego_x, self.ego_y)
                 self.curvedvelocity = self.curvebased_vel.run(self.ego_index_global, self.ego_index_local)
                 # 로컬경로일 경우 속도 제한
@@ -935,6 +920,7 @@ class Morai_Control_Node:
                         elif self.ego_gear == 1:
                             self.change_to_parking()
                         self.prev_gear = self.ego_gear
+                    rate.sleep()  # [2026_AISW] sleep 없이 continue 하면 15Hz 를 넘어 busy loop
                     continue
 
                 # # 종료 시점 정지 후 기어 P로 변경
@@ -970,6 +956,7 @@ class Morai_Control_Node:
                     self.ctrl_cmd_msg.brake = 1.0
                     self.ctrl_cmd_msg.steering = 0.0
                     self.ctrl_cmd_pub.publish(self.ctrl_cmd_msg)
+                    rate.sleep()  # [2026_AISW] busy loop 방지
                     continue
                 elif self.ego_mission == MissionState.mission_2:
                     pass

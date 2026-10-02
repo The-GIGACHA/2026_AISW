@@ -12,6 +12,14 @@
   <arg name="steer_scale" default="1.7391"/>
   <!-- 카메라 3대 UDP 9291/9293/9295 -> /image_jpeg{,_left,_right}/compressed 발행 (녹화/인지 개발용) -->
   <arg name="cam" default="false"/>
+  <!-- [2026_AISW] 전역경로 인덱스 구간 설정 (재밍/신호/합류 등). 다른 맵·시나리오면 덮어쓰기 -->
+  <arg name="sections_file" default="$(find aisw_2026)/config/kcity_sections.yaml"/>
+  <!-- [2026_AISW] 주행 데이터 CSV 기록 (~/aisw_logs) — AI 학습 데이터 수집 시 record:=true -->
+  <arg name="record" default="false"/>
+  <!-- [2026_AISW] 모든 회피 후보가 막혔을 때 정지 (연속 2사이클 확인). 기존 동작은 false -->
+  <arg name="stop_on_blocked" default="false"/>
+
+  <param name="/aisw/sections_file" value="$(arg sections_file)"/>
 
   <node pkg="aisw_2026" type="aisw_udp_bridge.py" launch-prefix="$(arg python)" name="aisw_udp_bridge" output="screen" respawn="true">
     <param name="sim_ip" value="$(arg sim_ip)"/>
@@ -27,5 +35,10 @@
   <node pkg="aisw_2026" type="master_v2.py" launch-prefix="$(arg python)" name="master_controller_node"
         output="screen" respawn="true" cwd="node"/>
   <node pkg="aisw_2026" type="lattice_planner_v2.py" launch-prefix="$(arg python)" name="lattice_planner"
-        output="screen" respawn="true" cwd="node"/>
+        output="screen" respawn="true" cwd="node">
+    <param name="stop_on_blocked" value="$(arg stop_on_blocked)"/>
+  </node>
+
+  <node pkg="aisw_2026" type="data_recorder.py" launch-prefix="$(arg python)" name="aisw_data_recorder"
+        output="screen" if="$(arg record)"/>
 </launch>

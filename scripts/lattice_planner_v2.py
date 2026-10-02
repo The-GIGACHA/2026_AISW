@@ -21,7 +21,7 @@ from tf.transformations import euler_from_quaternion
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import time
-from std_msgs.msg import UInt8, Float32, Bool
+from std_msgs.msg import UInt8, Float32, Bool, Float32MultiArray
 from vision_msgs.msg import Detection3DArray
 from collections import deque
 import struct
@@ -32,6 +32,8 @@ from scipy.interpolate import CubicSpline
 # RVIZ 용도
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
+
+from aisw_common import load_map_fields, ros_sections, get_section
 
 
 # Parameter 객체 (전역변수)
@@ -83,55 +85,8 @@ class Parameter:
     AVOIDANCE_RECOVERY_TIME = 2.3       # 회피 후 래티스 모드 유지 시간 [초]
     AVOIDANCE_RECOVERY_DISTANCE = 9.0  # 회피 후 래티스 모드 유지 거리 [m]
     
-    # 허용경로 2개 차선 시작/종료 지점 인덱스
-    SPECIAL_IDX_START_1 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    SPECIAL_IDX_END_1   = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-
-    
-    # (곡선구간) 혀용경로 1개 시작/종료
-    CUREVE_IDX_START_1 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CUREVE_IDX_END_1   = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CUREVE_IDX_START_2 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    # CUREVE_IDX_END_2   = 970
-    CUREVE_IDX_END_2   = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CUREVE_IDX_START_3 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CUREVE_IDX_END_3   = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CUREVE_IDX_START_4 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CUREVE_IDX_END_4   = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-
-    CUREVE_IDX_START_5 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CUREVE_IDX_END_5   = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-
-    # 횡단보도 구간 
-    CROSSLINE_IDX_START_0 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    #CROSSLINE_IDX_END_0 = 
-    CROSSLINE_IDX_START_1 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CROSSLINE_IDX_END_1 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CROSSLINE_IDX_START_2 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CROSSLINE_IDX_END_2 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CROSSLINE_IDX_START_3 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    CROSSLINE_IDX_END_3 = 9999999  # [2026_AISW] 옛 상암맵 인덱스 → 무효화(새 kcity 4392pt에서 오발동 방지)
-    
-
-    # U턴 끼어들기 0 (도로기준 좌측)
-    DANGER_IDX_START_0 = 10
-    DANGER_IDX_END_0 = 24
-    # 우측 끼어들기 1 (도로기준 우측)
-    DANGER_IDX_START_1 = 370
-    DANGER_IDX_END_1 = 385
-    # U턴 끼어들기 2 (도로기준 좌측)
-    # DANGER_IDX_START_2 = 
-    # DANGER_IDX_END_2 = 
-    # U턴 끼어들기 3 (도로기준 좌측)
-    DANGER_IDX_START_3 = 925
-    DANGER_IDX_END_3 = 938
-    # 우측 끼어들기 4 (도로기준 우측)
-    DANGER_IDX_START_4 = 1038
-    DANGER_IDX_END_4 = 1050
-    # U턴 끼어들기 5 (도로기준 좌측)
-    # DANGER_IDX_START_5 = 1530
-    # DANGER_IDX_END_5 = 1542
-
+    # [2026_AISW] 구간 인덱스(허용경로 2차선 / 곡선 단일차선 / 횡단보도 / 끼어들기)는
+    # config/kcity_sections.yaml 의 lattice.* 로 옮겼다.
 
     car_following_distance = 18.0      # 카팔로잉 인식 최대 거리 [m]
 
@@ -142,8 +97,8 @@ class Parameter:
     block_time = 1.10         # 장애물과 겹칠 경우 전역경로 막을 시간
     HOTSPOT_RADIUS = 1.3      # 장애물 전역경로 겹칠 경우, 원형존 반지름 [m]
 
-    # 끼어들기 구간별 튜닝 파라미터 [끼어들기 구간 : 0, 1, 3, 4, 5]
-    # 각 리스트의 i번째 값이 self.danger_ranges[i]에 대응 (없거나 None이면 기본값 사용)
+    # 끼어들기 구간별 튜닝 파라미터
+    # 각 리스트의 i번째 값이 self.danger_ranges[i] (= kcity_sections.yaml 의 lattice.merge_zones[i])에 대응 (없거나 None이면 기본값 사용)
     MERGE_ADJ_AHEAD = [car_following_distance-2.3, car_following_distance, car_following_distance-2.3, car_following_distance-2.3, car_following_distance-2.3]          # 옆차선 존재 감시 전방거리[m]
     MERGE_ADJ_D_MIN = [road_width * 0.6, road_width * 0.7, road_width * 0.6, road_width * 0.6, road_width * 0.7]                      # 옆차선으로 간주할 최소 |d|
     MERGE_ADJ_D_MAX = [road_width * 3.5, road_width * 5.5, road_width * 4.5, road_width * 4.5, road_width * 5.5]                      # 옆차선으로 간주할 최대 |d|
@@ -209,6 +164,14 @@ class LatticePlanner:
         self.path_mode = rospy.Publisher('/planner_mode', UInt8, queue_size=1, latch=True)
         self.vrel_pub = rospy.Publisher('/nearest_vrel', Float32, queue_size=1)
         self.merge_stop_pub = rospy.Publisher('/merge_stop_flag', UInt8, queue_size=1)
+        # [2026_AISW] 후보 경로 비용 기록용 (data_recorder 가 구독). [best_row, cost_row0..row8]
+        self.candidates_pub = rospy.Publisher('/lattice_candidates', Float32MultiArray, queue_size=1)
+
+        # [2026_AISW] 모든 후보가 inf(회피 불가)일 때 정지 경로를 보낼지. 센서 튐으로 인한
+        # 오정지 때문에 꺼져 있던 기능이라 기본 off, 켜면 연속 N 사이클 확인 후에만 정지한다.
+        self.stop_on_blocked = rospy.get_param('~stop_on_blocked', False)
+        self.stop_confirm_cycles = rospy.get_param('~stop_confirm_cycles', 2)
+        self._blocked_cycles = 0
 
         self.proj_UTM = Proj(proj='utm', zone=52, ellps='WGS84', preserve_units=False)
         rospy.Subscriber("/gps", GPSMessage, self.gps_callback)
@@ -291,32 +254,28 @@ class LatticePlanner:
                 return (self.spline_ref.s[i0], self.spline_ref.s[i1]) + tuple(extra)
             return None
 
+        # [2026_AISW] 구간 인덱스는 config/kcity_sections.yaml 에서 읽는다
+        sections = ros_sections()
+
+        def _ranges(key, with_side=False):
+            out = []
+            for z in get_section(sections, key, []):
+                extra = (int(z[2]),) if with_side else ()
+                r = _s_range(int(z[0]), int(z[1]), *extra)
+                if r is None:
+                    rospy.logwarn('[lattice] %s 구간 %s 가 맵 범위(%d점) 밖이라 무시', key, z, n_pts)
+                else:
+                    out.append(r)
+            return out
+
         # 허용경로 2개 차선 시작/종료 지점 s
-        self.special_s_ranges = [r for r in [
-            _s_range(Parameter.SPECIAL_IDX_START_1, Parameter.SPECIAL_IDX_END_1)
-        ] if r is not None]
-
+        self.special_s_ranges = _ranges('lattice.special_zones')
         # 허용경로 1개 시작/종료 지점 s (곡선구간)
-        self.curve_s_ranges = [r for r in [
-            _s_range(Parameter.CUREVE_IDX_START_1, Parameter.CUREVE_IDX_END_1),
-            _s_range(Parameter.CUREVE_IDX_START_2, Parameter.CUREVE_IDX_END_2),
-            _s_range(Parameter.CUREVE_IDX_START_3, Parameter.CUREVE_IDX_END_3),
-            _s_range(Parameter.CUREVE_IDX_START_4, Parameter.CUREVE_IDX_END_4),
-            _s_range(Parameter.CUREVE_IDX_START_5, Parameter.CUREVE_IDX_END_5)
-        ] if r is not None]
-
-        # 힝단보도 구간
-        self.crossline_s_ranges = [r for r in [
-            _s_range(Parameter.CROSSLINE_IDX_START_1, Parameter.CROSSLINE_IDX_END_1)
-        ] if r is not None]
-
-        # 끼어들기 구간 목록 (우측 0, 좌측 1)
-        self.danger_ranges = [r for r in [
-            _s_range(Parameter.DANGER_IDX_START_0, Parameter.DANGER_IDX_END_0, 1),
-            _s_range(Parameter.DANGER_IDX_START_1, Parameter.DANGER_IDX_END_1, 0),
-            _s_range(Parameter.DANGER_IDX_START_3, Parameter.DANGER_IDX_END_3, 1),
-            _s_range(Parameter.DANGER_IDX_START_4, Parameter.DANGER_IDX_END_4, 0)
-        ] if r is not None]
+        self.curve_s_ranges = _ranges('lattice.curve_single_lane')
+        # 횡단보도 구간
+        self.crossline_s_ranges = _ranges('lattice.crosswalk_zones')
+        # 끼어들기 구간 목록 (감시 방향: 우측 0, 좌측 1)
+        self.danger_ranges = _ranges('lattice.merge_zones', with_side=True)
 
         # 초기 글로벌 패스 발행 (Waiting for Local Path 문제 해결)
         self.publish_initial_global_path = True
@@ -379,21 +338,7 @@ class LatticePlanner:
 
     # 전역경로 json파일 불러와 PATH객체로 저장
     def load_ref_map(self, json_file):
-        with open(json_file, 'r') as f:
-                data = json.load(f)
-
-        keys = sorted(data.keys(), key=lambda k: int(k))
-
-        # rx, ry, ryaw, rk, rvel, rm, rgear 읽어옴
-        rx      = [data[k]['x']         for k in keys]
-        ry      = [data[k]['y']         for k in keys]
-        ryaw    = [data[k]['yaw']       for k in keys]
-        rk      = [data[k]['curvature'] for k in keys]
-        rvel    = [data[k]['velocity']  for k in keys]
-        rm      = [data[k]['mission']   for k in keys]
-        rgear   = [data[k]['gear']      for k in keys]
-
-        self.ref_path = PATH(rx, ry, ryaw, rk, rvel, rm, rgear)
+        self.ref_path = PATH(*load_map_fields(json_file))
 
         return self.ref_path
     
@@ -1041,6 +986,11 @@ class LatticePlanner:
         end_col = Parameter.ds_sampling_num - 1
         best_row = int(np.argmin(self.dp_cost[:, end_col]))
 
+        # [2026_AISW] 끝점 행별 누적 비용 기록 (inf 는 -1 로 표기 — Float32 직렬화/CSV 편의)
+        end_costs = self.dp_cost[:, end_col]
+        self.candidates_pub.publish(Float32MultiArray(data=[float(best_row)] + [
+            float(c) if np.isfinite(c) else -1.0 for c in end_costs]))
+
         # === [추가] 최종 선택 경로 비용이 inf면 즉시 STOP ===
         if not np.isfinite(self.dp_cost[best_row, end_col]):
             self.stop_this_cycle = True
@@ -1253,17 +1203,25 @@ class LatticePlanner:
                 path_x, path_y = self.make_path_cached(path_d_list, xr, yr, sin_yaw, cos_yaw)
                 make_ms = (time.perf_counter() - t3) * 1000.0
 
-                # if self.stop_this_cycle:
-                #     # 컨트롤러가 STOP을 인식하도록 첫 점 z=-100만 가진 최소 경로 전송
-                #     self.publish_path([self.gps_x], [self.gps_y], stop=True)
-                #     self.stop_this_cycle = False  # 다음 프레임 대비 리셋
+                # [2026_AISW] 회피 불가(모든 후보 inf) 정지 — ~stop_on_blocked 로 켠다.
+                # 연속 stop_confirm_cycles 사이클 확인해 센서 한두 프레임 튐으로 서지 않게 한다.
+                blocked = self.stop_this_cycle
+                self.stop_this_cycle = False  # 다음 프레임 대비 리셋
+                self._blocked_cycles = self._blocked_cycles + 1 if blocked else 0
+                if blocked:
+                    rospy.logwarn_throttle(1.0, '[lattice] 모든 후보 경로 inf (%d사이클)%s',
+                                           self._blocked_cycles,
+                                           '' if self.stop_on_blocked else ' — stop_on_blocked=false 라 주행 유지')
+                if self.stop_on_blocked and self._blocked_cycles >= self.stop_confirm_cycles:
+                    # 컨트롤러가 STOP을 인식하도록 첫 점 z=-100만 가진 최소 경로 전송
+                    self.publish_path([self.gps_x], [self.gps_y], stop=True)
 
-                #     # 모드도 래티스로 명시
-                #     mode_msg = UInt8(); mode_msg.data = 1
-                #     self.path_mode.publish(mode_msg)
+                    # 모드도 래티스로 명시
+                    mode_msg = UInt8(); mode_msg.data = 1
+                    self.path_mode.publish(mode_msg)
 
-                #     rate.sleep()
-                #     continue
+                    rate.sleep()
+                    continue
                                 
                 # 래티스 모드 로그에 회피 복귀 상태 포함
                 recovery_info = ""

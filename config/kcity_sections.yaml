@@ -1,0 +1,37 @@
+# [2026_AISW] K-City 전역경로(map/kcity_map.json, 4392점, 0.5 m 간격) 구간 설정.
+# 노드마다 흩어져 있던 하드코딩 인덱스(9999999 / 옛 상암맵 값)를 이 파일 하나로 모은다.
+#
+# - 구간은 [시작 인덱스, 끝 인덱스] (양 끝 포함). 빈 리스트 = 해당 기능 비활성.
+# - 인덱스 확인: python3 tools/find_index.py <x> <y>   또는   --csv <data_recorder 로그>
+# - 다른 파일을 쓰려면: roslaunch aisw_2026 aisw_midterm.launch sections_file:=<경로>
+# - 노드 개별 파라미터(~jamming_zone_start 등)가 설정돼 있으면 그쪽이 우선한다.
+
+# GPS 음영(재밍) 구간 — master_v2 가 진입/탈출 판정. 현재 첫 번째 구간만 사용.
+jamming_zones: []
+
+# 신호등 판단 구간 — 이 구간 안에서만 정지선/신호 판단을 한다.
+traffic_zones: []
+
+# 정지선 좌표 [[x, y], ...] (지역 좌표 m, GPS 오프셋 차감 후).
+# 옛 상암맵 좌표([620, -722.1], [768.34, -829.0])는 K-City 와 무관하므로 옮기지 않았다.
+stop_lines: []
+
+# 장애물 토픽 기반 정지 인덱스 (controller). -1 = 비활성.
+obstacle_stop_index: -1
+
+lattice:
+  # 허용경로 2개 차선 구간
+  special_zones: []
+  # 곡선 단일 차선 구간 — 이 구간에서만 앞차 상대속도(/nearest_vrel)를 낸다.
+  curve_single_lane: []
+  # 횡단보도 구간
+  crosswalk_zones: []
+  # 끼어들기 감시 구간 [시작, 끝, 감시 방향(0=우측, 1=좌측)]
+  # ⚠️ 아래 값은 옛 상암맵 인덱스를 그대로 옮긴 것이다(기존 동작 유지 목적).
+  #    K-City 에서 실제 합류 구간인지 확인 후 교체하거나 비울 것.
+  #    lattice_planner_v2 의 MERGE_* 튜닝 리스트는 이 목록의 순서와 1:1 대응한다.
+  merge_zones:
+    - [10, 24, 1]
+    - [370, 385, 0]
+    - [925, 938, 1]
+    - [1038, 1050, 0]

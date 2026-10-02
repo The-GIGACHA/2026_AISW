@@ -7,7 +7,7 @@ import threading
 from controller import Morai_Control_Node
 from planner.obstacle_planner import ObstaclePlanner
 from jamming_zone_controller import JammingZoneController
-from lattice_planner_v2 import LatticePlanner
+from aisw_common import load_map_fields, NearestIndexer, ros_sections, get_section
 from std_msgs.msg import Float32, Bool, UInt8
 from vision_msgs.msg import Detection3DArray
 from visualization_msgs.msg import MarkerArray
@@ -43,15 +43,12 @@ class MasterController:
         # ObstaclePlanner 초기화 (master 참조 전달)
         self.obstacle_planner = ObstaclePlanner(enable_subscribers=True, master=self)
 
-        # Lattice Planner 초기화 (s 계산용, init_node=False로 중복 방지)
-        self.lattice_planner = LatticePlanner(init_node=False)
+        # [2026_AISW] 쓰이지 않는 LatticePlanner 인스턴스 제거 — lattice_planner 노드와
+        # 같은 토픽을 중복 구독해 콜백만 두 배로 돌고 있었다.
 
         # Jamming Zone Controller 초기화 (rospy.init_node는 이미 호출되었으므로 스킵)
         self.jamming_controller = JammingZoneController(init_node=False)
 
-        # Controller에 lattice planner 참조 설정
-        self.controller.lattice_planner = self.lattice_planner
-        
         # 제밍모드 신호 퍼블리셔 (controller에게 제어권 양도 신호)
         self.jamming_mode_pub = rospy.Publisher("/jamming_mode_active", Bool, queue_size=1)
         
@@ -77,10 +74,16 @@ class MasterController:
         self.position_history = []
         self.max_history_size = 50  # 최근 50개 위치 저장
         
-        #self.jamming_zone_start = 1657  # 제밍구역 시작 인덱스
-        self.jamming_zone_start = rospy.get_param('~jamming_zone_start', 9999999)  # [2026_AISW] 기본 비활성
-        
-        self.jamming_zone_end = rospy.get_param('~jamming_zone_end', 9999999)
+        # [2026_AISW] 구간 설정: config/kcity_sections.yaml (~파라미터가 있으면 우선)
+        self.sections = ros_sections()
+        _jz = get_section(self.sections, 'jamming_zones', [])
+        _jz0 = _jz[0] if _jz else (9999999, 9999999)   # 비어 있으면 비활성
+        self.jamming_zone_start = rospy.get_param('~jamming_zone_start', int(_jz0[0]))
+        self.jamming_zone_end = rospy.get_param('~jamming_zone_end', int(_jz0[1]))
+        self.traffic_zones = rospy.get_param('~traffic_zones', get_section(self.sections, 'traffic_zones', []))
+        # 정지선: 옛 상암맵 하드코딩 좌표 대신 설정 파일 값 사용
+        self.obstacle_planner.stop_lines = [
+            {'x': float(p[0]), 'y': float(p[1])} for p in get_section(self.sections, 'stop_lines', [])]
         self.is_in_jamming_zone = False
         self.jamming_zone_mode_active = False
 
@@ -95,6 +98,7 @@ class MasterController:
 
         # 마스터에서 독립적으로 ref_path 로드
         self.master_ref_path = self.load_ref_map()
+        self.master_indexer = NearestIndexer(self.master_ref_path.cx, self.master_ref_path.cy)
         rospy.loginfo(f"Master ref_path 로드 완료: {self.master_ref_path.length}개 포인트")
         
         # 한 차로만 존재하고 전방에 차량이 있을 경우, 카팔로잉 용도
@@ -113,29 +117,7 @@ class MasterController:
     def load_ref_map(self):
         """마스터에서 독립적으로 ref_path 로드"""
         json_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'map', 'kcity_map.json')
-
-        with open(json_file, 'r') as f:
-            data = json.load(f)
-
-        keys = sorted(data.keys(), key=lambda k: int(k))
-
-        rx = [data[k]['x'] for k in keys]
-        ry = [data[k]['y'] for k in keys]
-        ryaw = [data[k]['yaw'] for k in keys]
-        rk = [data[k]['curvature'] for k in keys]
-        rvel = [data[k]['velocity'] for k in keys]
-        rm = [data[k]['mission'] for k in keys]
-        rgear = [data[k]['gear'] for k in keys]
-
-        return PATH(rx, ry, ryaw, rk, rvel, rm, rgear)
-
-    def nearest_index(self, path, ego_x, ego_y):
-        """현재 위치의 경로에서의 인덱스 검색 (controller.py와 동일)"""
-        dx = [ego_x - x for x in path.cx]
-        dy = [ego_y - y for y in path.cy]
-        dist = np.hypot(dx, dy)
-        ind = int(np.argmin(dist))
-        return ind
+        return PATH(*load_map_fields(json_file))
 
     def _vrel_cb(self, msg: Float32):
         self.nearest_vrel = msg.data
@@ -303,8 +285,7 @@ class MasterController:
 
         # 마스터의 ref_path를 사용하여 인덱스 계산 (controller와 무관하게 독립적으로)
         if self.master_ref_path is not None and self.master_ego_x != 0.0 and self.master_ego_y != 0.0:
-            self.master_ego_index_global = self.nearest_index(
-                self.master_ref_path, self.master_ego_x, self.master_ego_y)
+            self.master_ego_index_global = self.master_indexer.find(self.master_ego_x, self.master_ego_y)
 
         # 디버깅용 로그
         rospy.loginfo_throttle(5.0,
@@ -347,7 +328,7 @@ class MasterController:
         # 현재 인덱스 확인 - 신호등 처리 범위 제한 (141-221, 1100-1169)
         # 단, 이미 제동 중이면 인덱스와 관계없이 초록불 해제 로직은 실행
         current_index = self.master_ego_index_global
-        _tz = rospy.get_param('~traffic_zones', [])  # [2026_AISW] [[s,e],...] 미설정 시 신호등 로직 꺼짐
+        _tz = self.traffic_zones  # [2026_AISW] [[s,e],...] 비어 있으면 신호등 로직 꺼짐
         traffic_zone_1 = any(z[0] <= current_index <= z[1] for z in _tz)
         traffic_zone_2 = False
 
@@ -528,7 +509,7 @@ class MasterController:
                     if self.shadow_zone_estop_active:
                         rospy.logwarn_throttle(1.0, "[음영구간 E-STOP] 장애물로 인한 긴급정지!")
                         # 즉시 정지
-                        v, w = 0.0, 0.0
+                        v, steer = 0.0, 0.0
                     else:
                         # 정상 제밍구역 제어
                         # 제밍구역에서는 jamming_zone_controller가 직접 제어
@@ -547,13 +528,13 @@ class MasterController:
                         # jamming controller 한 번 실행 (cmd_vel 퍼블리시)
                         rospy.loginfo_throttle(1.0, "[JAMMING CONTROL] About to call compute_cmd...")
                         try:
-                            v, w = self.jamming_controller.compute_cmd()
-                            rospy.loginfo_throttle(1.0, f"[JAMMING CONTROL] SUCCESS: v={v:.3f} m/s, w={w:.3f} rad/s")
+                            v, steer = self.jamming_controller.compute_cmd()
+                            rospy.loginfo_throttle(1.0, f"[JAMMING CONTROL] SUCCESS: v={v:.3f} m/s, steer={steer:.3f} rad")
                         except Exception as e:
                             rospy.logerr(f"[JAMMING CONTROL ERROR] compute_cmd failed: {e}")
                             import traceback
                             rospy.logerr(f"[JAMMING CONTROL ERROR] Traceback: {traceback.format_exc()}")
-                            v, w = 0.0, 0.0
+                            v, steer = 0.0, 0.0
                         rospy.loginfo_throttle(1.0, "[JAMMING CONTROL] compute_cmd completed, proceeding to vehicle control...")
                     
                     # v(m/s)를 accel/brake로 변환 (controller의 AccelCmd_Converter 방식 사용)
@@ -563,7 +544,7 @@ class MasterController:
                     
                     self.controller.ctrl_cmd_msg.accel = accel_cmd
                     self.controller.ctrl_cmd_msg.brake = brake_cmd
-                    self.controller.ctrl_cmd_msg.steering = w  # w는 rad/s이므로 그대로 사용
+                    self.controller.ctrl_cmd_msg.steering = steer  # [2026_AISW] 조향각 [rad] (이전: yaw rate 를 그대로 넣던 단위 버그)
                     self.controller.ctrl_cmd_pub.publish(self.controller.ctrl_cmd_msg)
                     
                     #rospy.loginfo(f"[JAMMING CONTROL] Vehicle command sent: accel={accel_cmd:.3f}, brake={brake_cmd:.3f}, steering={w:.3f}")
@@ -599,11 +580,6 @@ class MasterController:
                 self.controller.external_speed_cap = cap
 
                 self.control_rate.sleep()
-                
-        except KeyboardInterrupt:
-            rospy.loginfo("Master Controller 종료")
-        except Exception as e:
-            rospy.logerr(f"제어 루프 오류: {e}")
                 
         except KeyboardInterrupt:
             rospy.loginfo("Master Controller 종료")

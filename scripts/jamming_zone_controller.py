@@ -41,8 +41,11 @@ class JammingZoneController:
         self.k_v_gain       = rospy.get_param("~lookahead_speed_gain", 0.4)
         self.target_speed   = rospy.get_param("~target_speed", 10.0)     # [m/s]
         self.max_speed      = rospy.get_param("~max_speed", 12.0)
-        self.k_yaw_rate     = rospy.get_param("~yaw_rate_gain", 0.2)    # ω 스케일
-        self.max_yaw_rate   = rospy.get_param("~max_yaw_rate", 0.3)     # [rad/s]
+        # [2026_AISW] 출력은 조향각 [rad]. 이전에는 v·κ(yaw rate)를 만들어 master 가 그대로
+        # steering 에 넣었다(단위 불일치). 이제 순수추종 조향각 δ=atan(L·κ)을 직접 낸다.
+        self.wheelbase      = rospy.get_param("~wheelbase", 3.0)        # [m]
+        self.steer_gain     = rospy.get_param("~steer_gain", 1.0)
+        self.max_steer      = rospy.get_param("~max_steer", 0.3)        # [rad] 이전 yaw rate 클램프와 같은 값
         self.auto_enable_on_zero_odom = rospy.get_param("~auto_enable_on_zero_odom", True)
 
         # --- State ---
@@ -187,13 +190,13 @@ class JammingZoneController:
 
         rospy.loginfo_throttle(2.0, f"[JZC Debug] Target point: ({xt:.2f}, {yt:.2f}), Lookahead: {Ld:.2f}m")
 
-        # Pure-Pursuit (로컬): κ ≈ 2*yt / Ld^2 → yaw_rate = v * κ
-        kappa   = 2.0 * yt / (Ld * Ld)
-        yaw_rate = clamp(self.k_yaw_rate * v * kappa, -self.max_yaw_rate, self.max_yaw_rate)
+        # Pure-Pursuit (로컬): κ ≈ 2*yt / Ld^2 → 조향각 δ = atan(L·κ)
+        kappa = 2.0 * yt / (Ld * Ld)
+        steer = clamp(self.steer_gain * math.atan(self.wheelbase * kappa), -self.max_steer, self.max_steer)
 
-        rospy.loginfo_throttle(2.0, f"[JZC Debug] Kappa: {kappa:.4f}, Yaw rate: {yaw_rate:.4f}")
+        rospy.loginfo_throttle(2.0, f"[JZC Debug] Kappa: {kappa:.4f}, Steer: {steer:.4f} rad")
 
-        return v, yaw_rate
+        return v, steer
 
     # ---------------- Main loop ----------------
     def run(self):
@@ -201,9 +204,9 @@ class JammingZoneController:
         while not rospy.is_shutdown():
             cmd = Twist()
             if self.jamming_mode_active:
-                v, w = self.compute_cmd()
+                v, steer = self.compute_cmd()
                 cmd.linear.x = v
-                cmd.angular.z = w
+                cmd.angular.z = v * math.tan(steer) / self.wheelbase  # Twist 는 yaw rate 로 변환
             else:
                 cmd.linear.x = 0.0
                 cmd.angular.z = 0.0
