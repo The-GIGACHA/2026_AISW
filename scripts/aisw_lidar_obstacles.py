@@ -13,7 +13,7 @@ import socket, struct, math
 import numpy as np
 import rospy
 from vision_msgs.msg import Detection3DArray, Detection3D, ObjectHypothesisWithPose
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, LaserScan
 
 VERT = np.deg2rad(np.array([-15,1,-13,3,-11,5,-9,7,-7,9,-5,11,-3,13,-1,15], dtype=np.float32))
 
@@ -24,6 +24,9 @@ def main():
     ZLO=float(gp('z_lo',-1.4)); ZHI=float(gp('z_hi',0.8)); RMAX=float(gp('max_range',30.0))
     LX=float(gp('lidar_x',1.5))
     pub=rospy.Publisher('/tracked_objects_3d', Detection3DArray, queue_size=1)
+    # [2026_AISW] AI 구간(ai_zone_controller) 입력용 2D 거리 스캔: 장애물 높이대 점의 방위별 최소거리
+    scan_pub=rospy.Publisher('/aisw/lidar_scan', LaserScan, queue_size=1)
+    NBIN=int(gp('scan_bins',72))
     s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.settimeout(1.0)
     s.bind(('0.0.0.0',port))
@@ -50,9 +53,21 @@ def main():
         if azi[0]<last_azi:  # 방위각 랩 = 한 바퀴 완료
             if sweep:
                 pts=np.concatenate(sweep); sweep=[]
+                publish_scan(pts, scan_pub, NBIN, RMAX)
                 process(pts, pub, GRID, MINP, LX)
             else: sweep=[]
         last_azi=azi[0]
+
+def publish_scan(pts, pub, nbin, rmax):
+    """라이다 프레임 기준 방위 nbin 칸(-180°~+180°, 좌+)별 최소 수평거리. 빈 칸 = rmax."""
+    r=np.hypot(pts[:,0],pts[:,1])
+    b=((np.arctan2(pts[:,1],pts[:,0])+math.pi)/(2*math.pi)*nbin).astype(np.int64)%nbin
+    ranges=np.full(nbin, rmax, dtype=np.float32)
+    np.minimum.at(ranges, b, r.astype(np.float32))
+    m=LaserScan(); m.header.stamp=rospy.Time.now(); m.header.frame_id='lidar'
+    m.angle_min=-math.pi; m.angle_increment=2*math.pi/nbin; m.angle_max=math.pi-m.angle_increment
+    m.range_min=0.5; m.range_max=float(rmax); m.ranges=ranges.tolist()
+    pub.publish(m)
 
 def process(pts, pub, GRID, MINP, LX):
     # 2D 그리드 연결요소 클러스터링

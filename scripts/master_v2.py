@@ -6,11 +6,12 @@ import rospy
 import threading
 from controller import Morai_Control_Node
 from planner.obstacle_planner import ObstaclePlanner
-from jamming_zone_controller import JammingZoneController
-from aisw_common import load_map_fields, NearestIndexer, ros_sections, get_section
-from std_msgs.msg import Float32, Bool, UInt8
-from vision_msgs.msg import Detection3DArray
-from visualization_msgs.msg import MarkerArray
+from aisw_common import PKG_DIR, load_map_fields, NearestIndexer, ros_sections, get_section
+from ai.dead_reckoning import DeadReckoning
+from ai.zone_controller import AIZoneController
+from std_msgs.msg import Float32, Bool, UInt8, String
+from sensor_msgs.msg import Imu, LaserScan
+from geometry_msgs.msg import PoseStamped
 import math
 import numpy as np
 import json
@@ -46,11 +47,12 @@ class MasterController:
         # [2026_AISW] 쓰이지 않는 LatticePlanner 인스턴스 제거 — lattice_planner 노드와
         # 같은 토픽을 중복 구독해 콜백만 두 배로 돌고 있었다.
 
-        # Jamming Zone Controller 초기화 (rospy.init_node는 이미 호출되었으므로 스킵)
-        self.jamming_controller = JammingZoneController(init_node=False)
-
-        # 제밍모드 신호 퍼블리셔 (controller에게 제어권 양도 신호)
+        # [2026_AISW] AI 구간 제어권 신호 (True = master 가 직접 제어, controller/lattice 는 대기).
+        # 토픽 이름은 기존 노드 호환을 위해 /jamming_mode_active 유지.
         self.jamming_mode_pub = rospy.Publisher("/jamming_mode_active", Bool, queue_size=1)
+        self.drive_mode_pub = rospy.Publisher('/aisw/drive_mode', String, queue_size=1)
+        self.mission_pub = rospy.Publisher('/aisw/mission', String, queue_size=1)
+        self.pose_pub = rospy.Publisher('/aisw/ego_pose', PoseStamped, queue_size=1)
         
         # 제어 주기
         self.control_rate = rospy.Rate(15)  # 30Hz
@@ -76,19 +78,11 @@ class MasterController:
         
         # [2026_AISW] 구간 설정: config/kcity_sections.yaml (~파라미터가 있으면 우선)
         self.sections = ros_sections()
-        _jz = get_section(self.sections, 'jamming_zones', [])
-        _jz0 = _jz[0] if _jz else (9999999, 9999999)   # 비어 있으면 비활성
-        self.jamming_zone_start = rospy.get_param('~jamming_zone_start', int(_jz0[0]))
-        self.jamming_zone_end = rospy.get_param('~jamming_zone_end', int(_jz0[1]))
         self.traffic_zones = rospy.get_param('~traffic_zones', get_section(self.sections, 'traffic_zones', []))
         # 정지선: 옛 상암맵 하드코딩 좌표 대신 설정 파일 값 사용
         self.obstacle_planner.stop_lines = [
             {'x': float(p[0]), 'y': float(p[1])} for p in get_section(self.sections, 'stop_lines', [])]
-        self.is_in_jamming_zone = False
-        self.jamming_zone_mode_active = False
-
-        # 음영구간 장애물 감지 및 e-stop 관련
-        self.shadow_zone_estop_active = False
+        self.is_in_jamming_zone = False   # = AI 구간 제어 중 (구 이름 유지)
 
         # 마스터에서 관리하는 인덱스 (제밍 모드와 무관하게 지속적으로 업데이트)
         self.master_ego_index_global = 0
@@ -100,6 +94,27 @@ class MasterController:
         self.master_ref_path = self.load_ref_map()
         self.master_indexer = NearestIndexer(self.master_ref_path.cx, self.master_ref_path.cy)
         rospy.loginfo(f"Master ref_path 로드 완료: {self.master_ref_path.length}개 포인트")
+
+        # [2026_AISW] AI 구간 (config ai_zones): GPS 음영 / 회전교차로 → ai_zone_controller
+        self.ai_zones = get_section(self.sections, 'ai_zones', [])
+        self.missions = get_section(self.sections, 'missions', [])
+        speed_limit = float(get_section(self.sections, 'speed_limit_kph', 55.0)) / 3.6
+        self.ai_ctrl = AIZoneController(
+            self.master_ref_path.cx, self.master_ref_path.cy,
+            model_dir=os.path.expanduser(rospy.get_param('~model_dir', os.path.join(PKG_DIR, 'models'))),
+            speed_limit_mps=speed_limit,
+            use_ai=bool(rospy.get_param('~ai_enable', True)),
+            log=rospy.loginfo)
+        self.active_zone = None
+        self.dr = DeadReckoning()
+        self._last_fix_t = None
+        self.gps_age = float('inf')
+        self.yaw_rate = 0.0
+        self.scan = None
+        self._scan_t = 0.0
+        self._last_loop_t = None
+        rospy.Subscriber('/aisw/lidar_scan', LaserScan, self._scan_cb, queue_size=1)
+        rospy.Subscriber('/imu', Imu, self._imu_rate_cb, queue_size=1)
         
         # 한 차로만 존재하고 전방에 차량이 있을 경우, 카팔로잉 용도
         rospy.Subscriber('/nearest_vrel', Float32, self._vrel_cb)
@@ -109,9 +124,6 @@ class MasterController:
         rospy.Subscriber('/merge_stop_flag', UInt8, self.stop_vrel)
         self.stop_vrel_flag = None
 
-        # 음영구간 장애물 감지용 토픽 구독
-        rospy.Subscriber('/drivable_area_objects', MarkerArray, self.shadow_zone_obstacle_callback)
-        
         rospy.loginfo("MasterController 초기화 완료")
 
     def load_ref_map(self):
@@ -127,31 +139,12 @@ class MasterController:
         # 1이면 정지, 0이면 정지X
         self.stop_vrel_flag = int(msg.data)
 
-    def shadow_zone_obstacle_callback(self, msg: MarkerArray):
-        """음영구간 장애물 감지 콜백 - iou_fusion_markers 토픽"""
-        # 제밍구역(음영구간) 내에서만 처리
-        if not self.is_in_jamming_zone:
-            return
+    def _scan_cb(self, msg):
+        self.scan = msg.ranges
+        self._scan_t = rospy.get_time()
 
-        # 마커가 있으면 장애물 감지 - 즉시 정지
-        if msg.markers and len(msg.markers) > 0:
-            # 첫 번째 마커 정보 추출
-            first_marker = msg.markers[0]
-            obstacle_x = first_marker.pose.position.x
-            obstacle_y = first_marker.pose.position.y
-            obstacle_distance = math.sqrt(obstacle_x**2 + obstacle_y**2)
-
-            if not self.shadow_zone_estop_active:
-                rospy.logwarn(f"[음영구간 E-STOP] 장애물 감지! 거리: {obstacle_distance:.1f}m")
-                rospy.logwarn("==== 음영구간 E-STOP 활성화! ====")
-
-            self.shadow_zone_estop_active = True
-        else:
-            # 마커가 없으면 장애물 없음 - 즉시 주행 재개
-            if self.shadow_zone_estop_active:
-                rospy.loginfo("==== 음영구간 E-STOP 해제 - 주행 재개 ====")
-
-            self.shadow_zone_estop_active = False
+    def _imu_rate_cb(self, msg):
+        self.yaw_rate = msg.angular_velocity.z
 
     def _compute_speed_cap_from_vrel(self):
         # 정지명령 수신시 정지 최우선
@@ -230,89 +223,106 @@ class MasterController:
         
         return corrected_distance
     
-    def check_jamming_zone(self):
-        """제밍구역 진입/탈출 체크 (마스터가 관리하는 전역 인덱스 사용)"""
-        # 마스터에서 관리하는 인덱스 사용 (제밍 모드와 무관하게 지속 업데이트)
-        current_index = self.master_ego_index_global
-
-        if current_index is None:
-            rospy.logwarn_throttle(2.0, "[Jamming] master ego index not ready")
-            return self.is_in_jamming_zone
-
-        try:
-            current_index = int(current_index)
-        except Exception:
-            rospy.logwarn_throttle(2.0, f"[Jamming] invalid master index: {current_index}")
-            return self.is_in_jamming_zone
-
-        # 디버깅 로그 추가
-        #rospy.loginfo_throttle(1.0, f"[Jamming Debug] Current index: {current_index}, Start: {self.jamming_zone_start}, End: {self.jamming_zone_end}, In zone: {self.is_in_jamming_zone}")
-
-        # 1. 제밍구역 진입: GPS 인덱스가 1657에 도달하면 제밍구역 진입
-        if (not self.is_in_jamming_zone) and (current_index >= self.jamming_zone_start):
-            rospy.loginfo("="*50)
-            rospy.loginfo(f"==== 제밍구역 진입! (인덱스: {current_index}) ====")
-            rospy.loginfo("==== GPS 신호 차단 - 카메라 경로 추종 시작 ====")
-            rospy.loginfo("="*50)
-            self.is_in_jamming_zone = True
-
-        # 2. 제밍구역 탈출: GPS 인덱스가 1825에 도달하면 제밍구역 탈출
-        if self.is_in_jamming_zone and (current_index >= self.jamming_zone_end):
-            rospy.loginfo("="*50)
-            rospy.loginfo(f"==== 제밍구역 탈출! (인덱스: {current_index}) ====")
-            rospy.loginfo("==== GPS 신호 복구 - GPS 경로 추종 재개 ====")
-            rospy.loginfo("="*50)
-            self.is_in_jamming_zone = False
-            self.deactivate_jamming_zone_mode()
-
-        # 3. 제밍구역 내에서는 GPS 인덱스 완전 무시
-        elif self.is_in_jamming_zone:
-            rospy.loginfo_throttle(5.0, f"[Jamming Mode] GPS 무시, 카메라 경로 추종 중 (현재 GPS 인덱스: {current_index})")
-
-        return self.is_in_jamming_zone
-
     def update_master_ego_status(self):
-        """마스터에서 차량 위치와 인덱스를 지속적으로 업데이트 (제밍 모드와 무관)"""
-        # controller에서 차량 위치 정보 가져오기
-        if hasattr(self.controller, 'ego_x') and hasattr(self.controller, 'ego_y'):
-            self.master_ego_x = self.controller.ego_x
-            self.master_ego_y = self.controller.ego_y
+        """GPS 가 신선하면 GPS, 끊기면 추측항법으로 자차 위치/인덱스를 갱신 (제어 모드와 무관하게 매 주기)."""
+        c = self.controller
+        now = rospy.get_time()
+        gps_t = getattr(c, '_last_gps_t', 0.0)
+        self.gps_age = (now - gps_t) if gps_t > 0.0 else float('inf')
+        self.master_ego_yaw = getattr(c, 'ego_yaw', 0.0)
+        if gps_t > 0.0 and gps_t != self._last_fix_t and self.gps_age < 0.25:
+            self.dr.fix(c.ego_x, c.ego_y, now)
+            self._last_fix_t = gps_t
+        else:
+            self.dr.predict(getattr(c, 'ego_vel', 0.0), math.radians(self.master_ego_yaw), now)
 
-        if hasattr(self.controller, 'ego_yaw'):
-            self.master_ego_yaw = self.controller.ego_yaw
-        elif hasattr(self.controller, 'adjusted_yaw'):
-            self.master_ego_yaw = self.controller.adjusted_yaw
-
-        # 마스터의 ref_path를 사용하여 인덱스 계산 (controller와 무관하게 독립적으로)
-        if self.master_ref_path is not None and self.master_ego_x != 0.0 and self.master_ego_y != 0.0:
+        if self.dr.ready:
+            self.master_ego_x, self.master_ego_y = self.dr.x, self.dr.y
             self.master_ego_index_global = self.master_indexer.find(self.master_ego_x, self.master_ego_y)
+            pose = PoseStamped()
+            pose.header.stamp = rospy.Time.now()
+            pose.header.frame_id = 'map'
+            pose.pose.position.x, pose.pose.position.y = self.master_ego_x, self.master_ego_y
+            pose.pose.position.z = 0.0 if self.gps_age < 0.5 else 1.0   # z=1: 추측항법 위치 (로그 구분용)
+            half = math.radians(self.master_ego_yaw) / 2.0
+            pose.pose.orientation.z, pose.pose.orientation.w = math.sin(half), math.cos(half)
+            self.pose_pub.publish(pose)
 
-        # 디버깅용 로그
+        idx = self.master_ego_index_global
+        names = [m['name'] for m in self.missions if int(m['start']) <= idx <= int(m['end'])]
+        self.mission_pub.publish(String(','.join(names)))
+
         rospy.loginfo_throttle(5.0,
             f"[Master] 위치=({self.master_ego_x:.1f}, {self.master_ego_y:.1f}), "
-            f"인덱스={self.master_ego_index_global}, yaw={self.master_ego_yaw:.1f}")
+            f"인덱스={idx}, yaw={self.master_ego_yaw:.1f}, GPS age={self.gps_age:.1f}s, 미션={names}")
 
-    def activate_jamming_zone_mode(self):
-        """제밍구역 모드 활성화"""
-        rospy.loginfo("제밍구역 모드 활성화:")
-        rospy.loginfo("  - GPS 신호 무시")
-        rospy.loginfo("  - 다른 센서 기반 주행 시작")
-        rospy.loginfo("  - 장애물/신호등 제어 비활성화")
-        
-        # 여기에 제밍구역 모드에 필요한 설정 추가
-        # 예: self.controller.use_gps = False
-        #     self.controller.use_jamming_mode = True
-    
-    def deactivate_jamming_zone_mode(self):
-        """제밍구역 모드 비활성화"""
-        rospy.loginfo("일반 모드 복귀:")
-        rospy.loginfo("  - GPS 신호 재활성화")  
-        rospy.loginfo("  - 장애물/신호등 제어 재활성화")
-        
-        # 여기에 일반 모드 복귀에 필요한 설정 추가
-        # 예: self.controller.use_gps = True
-        #     self.controller.use_jamming_mode = False
-    
+    def update_ai_zone(self):
+        """AI 구간 진입/탈출 판정. GPS 음영 중에는 추측항법 인덱스로 진행을 따라간다.
+
+        - ai_zones 의 [enter, end] 안이면 해당 모드
+        - 어디서든 GPS 가 0.5초 넘게 끊기면 shaded 모드 (예상 밖 두절 대비.
+          controller 의 GPS 두절 크리프/정지(0.7초)보다 먼저 제어권을 가져온다)
+        - shaded 구간 끝을 지나도 GPS 가 복구되기 전까지는 shaded 유지
+        """
+        idx = self.master_ego_index_global
+        zone = None
+        if self.dr.ready:
+            for z in self.ai_zones:
+                if int(z['enter']) <= idx <= int(z['end']):
+                    zone = z
+                    break
+            if self.gps_age > 0.5 and (zone is None or zone.get('mode') != 'shaded'):
+                if self.active_zone and self.active_zone.get('mode') == 'shaded':
+                    zone = self.active_zone
+                else:
+                    zone = {'name': 'gps_lost', 'mode': 'shaded', 'enter': idx, 'end': idx}
+
+        prev = self.active_zone['name'] if self.active_zone else None
+        cur = zone['name'] if zone else None
+        if cur != prev:
+            if zone is not None:
+                rospy.loginfo('=' * 50)
+                rospy.loginfo('==== AI 구간 진입: %s (mode=%s, 인덱스 %d, GPS age %.1fs) ====',
+                              cur, zone.get('mode'), idx, self.gps_age)
+                # gps_lost → gps_shaded 처럼 같은 모드 안에서 이름만 바뀌면 회피 상태 유지
+                if self.active_zone is None or self.active_zone.get('mode') != zone.get('mode'):
+                    self.ai_ctrl.reset()
+            else:
+                rospy.loginfo('==== AI 구간 탈출: %s (인덱스 %d) → 룰베이스 복귀 ====', prev, idx)
+                # 룰베이스 복귀 시 신호등 래치 등 이전 상태가 남지 않게
+                self.braking_started = False
+                self.controller.traffic_light_brake = False
+        self.active_zone = zone
+        self.is_in_jamming_zone = zone is not None
+        return zone
+
+    def ai_zone_control(self, zone):
+        """AI 구간 1주기 제어: ai_zone_controller 출력 → /ctrl_cmd 직접 발행."""
+        now = rospy.get_time()
+        dt = 1.0 / 15 if self._last_loop_t is None else min(max(now - self._last_loop_t, 0.01), 0.2)
+        ego_vel = getattr(self.controller, 'ego_vel', 0.0)
+        scan_fresh = (now - self._scan_t) < 0.5
+        v, steer, source = self.ai_ctrl.step(
+            zone.get('mode', 'shaded'), self.master_ego_index_global,
+            self.master_ego_x, self.master_ego_y, math.radians(self.master_ego_yaw),
+            ego_vel, self.yaw_rate, self.scan if scan_fresh else None, dt)
+        if not scan_fresh:
+            # LiDAR 없이는 통로 감시가 불가능 → 서행
+            v = min(v, 8.0 / 3.6)
+            source += '+no_lidar'
+            rospy.logwarn_throttle(2.0, '[AI] /aisw/lidar_scan 0.5초 이상 끊김 — 8 kph 서행 (lidar_obstacles:=true 확인)')
+
+        accel_cmd, brake_cmd = self.controller.cmd_converter.run(v, ego_vel, 4)  # 기어 D(4)
+        msg = self.controller.ctrl_cmd_msg
+        msg.accel = min(max(accel_cmd, 0.0), 1.0)
+        msg.brake = min(max(brake_cmd, 0.0), 1.0)
+        msg.steering = steer   # [rad], 브리지에서 steer_scale 보상
+        self.controller.ctrl_cmd_pub.publish(msg)
+        self.drive_mode_pub.publish(String('AI_%s:%s' % (zone.get('mode'), source)))
+        rospy.loginfo_throttle(1.0, '[AI %s] idx=%d v=%.1f→%.1fkph steer=%.1f° src=%s GPS age=%.1fs DR %.0fm',
+                               zone.get('name'), self.master_ego_index_global, ego_vel * 3.6, v * 3.6,
+                               math.degrees(steer), source, self.gps_age, self.dr.dist_since_fix)
+
     def get_traffic_light_strategy(self):
         """신호등 기반 주행 전략 계산"""
         # 차량 위치 확인
@@ -489,75 +499,20 @@ class MasterController:
                 # 0. 마스터 차량 상태 업데이트 (제밍 모드와 무관하게 지속)
                 self.update_master_ego_status()
 
-                if hasattr(self.controller, 'ego_index_global'):
-                    rospy.loginfo(f"[Master Check] Controller Index = {self.controller.ego_index_global}")
-                rospy.loginfo(f"[Master Check] Master Index = {self.master_ego_index_global}")
 
-                # 1. 제밍구역 상태를 "한 번만" 체크
-                in_jamming_zone = self.check_jamming_zone()
-                
-                # 제밍모드 신호를 controller.py에게 전송
-                jamming_signal = Bool()
-                jamming_signal.data = in_jamming_zone
-                self.jamming_mode_pub.publish(jamming_signal)
+                # 1. AI 구간 판정 (GPS 음영 / 회전교차로)
+                zone = self.update_ai_zone()
+                self.jamming_mode_pub.publish(Bool(data=zone is not None))
 
-                # 2. 체크된 상태값(in_jamming_zone)을 사용하여 분기
-                if in_jamming_zone:
-                    rospy.loginfo_throttle(2.0, f"제밍구역 내 주행 중 - 마스터 인덱스: {self.master_ego_index_global}")
-
-                    # 음영구간 e-stop 체크 (최우선)
-                    if self.shadow_zone_estop_active:
-                        rospy.logwarn_throttle(1.0, "[음영구간 E-STOP] 장애물로 인한 긴급정지!")
-                        # 즉시 정지
-                        v, steer = 0.0, 0.0
-                    else:
-                        # 정상 제밍구역 제어
-                        # 제밍구역에서는 jamming_zone_controller가 직접 제어
-                        self.jamming_controller.jamming_mode_active = True
-                        rospy.loginfo("[Master Debug] Starting jamming zone control...")
-
-                        # jamming_controller의 odom 정보 업데이트 (마스터에서 관리하는 정보 사용)
-                        #rospy.loginfo("[JAMMING DEBUG] Checking master attributes...")
-
-                        # 마스터에서 관리하는 위치 정보 전달
-                        self.jamming_controller.odom_x = self.master_ego_x
-                        self.jamming_controller.odom_y = self.master_ego_y
-                        self.jamming_controller.odom_yaw = self.master_ego_yaw
-                        #rospy.loginfo(f"[JAMMING DEBUG] Updated odom from master: x={self.master_ego_x:.3f}, y={self.master_ego_y:.3f}, yaw={self.master_ego_yaw:.3f}")
-
-                        # jamming controller 한 번 실행 (cmd_vel 퍼블리시)
-                        rospy.loginfo_throttle(1.0, "[JAMMING CONTROL] About to call compute_cmd...")
-                        try:
-                            v, steer = self.jamming_controller.compute_cmd()
-                            rospy.loginfo_throttle(1.0, f"[JAMMING CONTROL] SUCCESS: v={v:.3f} m/s, steer={steer:.3f} rad")
-                        except Exception as e:
-                            rospy.logerr(f"[JAMMING CONTROL ERROR] compute_cmd failed: {e}")
-                            import traceback
-                            rospy.logerr(f"[JAMMING CONTROL ERROR] Traceback: {traceback.format_exc()}")
-                            v, steer = 0.0, 0.0
-                        rospy.loginfo_throttle(1.0, "[JAMMING CONTROL] compute_cmd completed, proceeding to vehicle control...")
-                    
-                    # v(m/s)를 accel/brake로 변환 (controller의 AccelCmd_Converter 방식 사용)
-                    current_vel = getattr(self.controller, 'ego_vel', 0.0)  # m/s
-                    #rospy.loginfo(f"[JAMMING DEBUG] Current velocity: {current_vel:.3f} m/s, target velocity: {v:.3f} m/s")
-                    accel_cmd, brake_cmd = self.controller.cmd_converter.run(v, current_vel, 4)  # 기어는 D(4) 고정
-                    
-                    self.controller.ctrl_cmd_msg.accel = accel_cmd
-                    self.controller.ctrl_cmd_msg.brake = brake_cmd
-                    self.controller.ctrl_cmd_msg.steering = steer  # [2026_AISW] 조향각 [rad] (이전: yaw rate 를 그대로 넣던 단위 버그)
-                    self.controller.ctrl_cmd_pub.publish(self.controller.ctrl_cmd_msg)
-                    
-                    #rospy.loginfo(f"[JAMMING CONTROL] Vehicle command sent: accel={accel_cmd:.3f}, brake={brake_cmd:.3f}, steering={w:.3f}")
-                    #rospy.loginfo("[JAMMING CONTROL] ===== 카메라 경로 추종 중 =====")
-                    
+                if zone is not None:
+                    self.ai_zone_control(zone)
+                    self._last_loop_t = rospy.get_time()
                     self.control_rate.sleep()
                     continue
-                else:
-                    # 제밍구역이 아닐 때는 jamming controller 비활성화
-                    self.jamming_controller.jamming_mode_active = False
-                
-                # --- 제밍구역이 아닐 때만 아래 로직 실행 ---
-                # ====================[ 수정된 부분 종료 ]====================
+                self._last_loop_t = rospy.get_time()
+                self.drive_mode_pub.publish(String('RULE'))
+
+                # --- 이하 룰베이스 (AI 구간이 아닐 때) ---
                 
                 # 1. 자차 정보를 obstacle_planner에 전달 (절대속도 변환용)
                 if hasattr(self.controller, 'ego_vel') and hasattr(self.controller, 'adjusted_yaw'):

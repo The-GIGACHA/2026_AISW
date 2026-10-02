@@ -31,6 +31,7 @@ from collections import deque
 import rospy
 from sensor_msgs.msg import Imu, CompressedImage
 from morai_msgs.msg import GPSMessage, CtrlCmd, EgoVehicleStatus
+from std_msgs.msg import String
 from pyproj import Proj
 from morai_camera import JpegAssembler
 
@@ -78,6 +79,9 @@ class Bridge:
         self._v_ema = 0.0
         self._status_vel = None  # (수신시각, vel_x [m/s])
         self.pub_imu = rospy.Publisher('/imu', Imu, queue_size=1)
+        # [2026_AISW] 현재 MGeo 링크 ID (Status @114). 규정 속도예외 구간(A2256W000411~000153) 판정·링크↔인덱스 표 작성용
+        self.pub_link = rospy.Publisher('/aisw/link_id', String, queue_size=1)
+        self._last_link = None
         self.tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         rospy.Subscriber('/ctrl_cmd', CtrlCmd, self.cb_ctrl, queue_size=1)
 
@@ -194,6 +198,13 @@ class Bridge:
             if raw[0:11] != b'#MoraiInfo$' or len(raw) < 27 + 114: continue
             # vel_x 단위 km/h (실측: GPS 1초 변위 속도 대비 정확히 3.6배) -> m/s
             self._status_vel = (rospy.Time.now().to_sec(), struct.unpack_from('<f', raw, 27 + 74)[0] / 3.6)
+            # link_id: data @114 ~ 끝(152) 고정길이 문자열, NUL 패딩
+            link = raw[27 + 114:27 + 152].split(b'\x00', 1)[0].decode('ascii', 'ignore').strip()
+            if link:
+                self.pub_link.publish(String(link))
+                if link != self._last_link:
+                    rospy.loginfo_throttle(1.0, '[aisw_udp_bridge] link_id=%s', link)
+                    self._last_link = link
 
     # ---------- IMU ----------
     def loop_imu(self, port):

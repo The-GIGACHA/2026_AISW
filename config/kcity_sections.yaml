@@ -3,35 +3,76 @@
 #
 # - 구간은 [시작 인덱스, 끝 인덱스] (양 끝 포함). 빈 리스트 = 해당 기능 비활성.
 # - 인덱스 확인: python3 tools/find_index.py <x> <y>   또는   --csv <data_recorder 로그>
+# - 미션 위치 그림: python3 tools/plot_missions.py  →  ~/aisw_logs/missions.png
 # - 다른 파일을 쓰려면: roslaunch aisw_2026 aisw_midterm.launch sections_file:=<경로>
 # - 노드 개별 파라미터(~jamming_zone_start 등)가 설정돼 있으면 그쪽이 우선한다.
+#
+# 근거 표기(source):
+#   rule     = 규정집 v1.1 (2026.09.08) 문구로 계산
+#   scenario = 2026_molit_comp_sample_scene.json 객체 좌표 → 최근접 인덱스
+#   geometry = 전역경로 곡률 패턴으로 판단 (회전교차로: 우-좌-우)
+#   estimate = MGeo 링크 좌표가 없어 추정. 한 바퀴 record:=true 주행 후
+#              tools/link_index_table.py 로 link_id ↔ 인덱스를 뽑아 확정할 것
 
-# GPS 음영(재밍) 구간 — master_v2 가 진입/탈출 판정. 현재 첫 번째 구간만 사용.
-jamming_zones: []
+# ── 규정집 미션 위치 (mission_markers 노드가 RViz 로 표시, master 가 현재 미션 이름 발행) ──
+missions:
+  - {name: start_5pct,    type: checkpoint, start: 220,  end: 220,  source: rule,
+     note: "출발 1분 이내 경로 5% 지점 통과 (2184.6 m x 5% = 109 m)"}
+  - {name: s_curve,       type: lane_keep,  start: 140,  end: 290,  source: geometry,
+     note: "좌 90° → 우 90° S자 (R≈16 m) — 차로 준수 주의"}
+  - {name: static_obstacle, type: obstacle, start: 620,  end: 700,  source: scenario,
+     note: "정적 장애물 2x3x2 m @(-60.6,-142.2) ≈ idx 661"}
+  - {name: pedestrian,    type: obstacle,   start: 895,  end: 955,  source: scenario,
+     note: "보행자 @(-56.7,-11.6) ≈ idx 925, 경로에서 3.5 m"}
+  - {name: urban_turn_right, type: intersection, start: 1100, end: 1180, source: estimate,
+     note: "도심 우회전 (R≈21 m) — 신호 교차로 후보, 정지선 좌표 확인 필요"}
+  - {name: urban_turn_left,  type: intersection, start: 1220, end: 1290, source: estimate,
+     note: "도심 좌회전 (R≈18 m) — 신호 교차로 후보, 정지선 좌표 확인 필요"}
+  - {name: roundabout,    type: roundabout, start: 1765, end: 1865, source: geometry,
+     note: "우(진입)-좌(회전)-우(진출) 패턴 1779~1855, NPC 21 (spawn 4) 순환 → AI 구간"}
+  - {name: highway_merge, type: merge,      start: 2140, end: 2260, source: estimate,
+     note: "고주로 합류. NPC spawn 6/8/10 이 남행 차로(x≈65~74)로 진입 — 좌측 감시"}
+  - {name: speed_exempt,  type: speed_limit, start: 2140, end: 3600, source: estimate,
+     note: "규정: A2256W000411 시작점 ~ A2256W000153 끝점은 60 kph 예외. 링크 좌표 미확보"}
+  - {name: gps_shaded,    type: gps_shaded, start: 3780, end: 3974, source: scenario,
+     note: "음영 박스 @(-23.7,-519.2) 118x7.4 m, yaw -58.8° → 경로 3780~3974. 랜덤 장애물 미션 가능 → AI 구간"}
+  - {name: finish,        type: checkpoint, start: 4391, end: 4391, source: rule,
+     note: "완주 (경로 끝 = 시작점, 제한 15분)"}
+
+# ── AI 구간 — master_v2 가 이 구간에서 룰베이스 대신 ai_zone_controller 로 제어 ──
+# mode: shaded(GPS 없이 추측항법+LiDAR) / roundabout(GPS+LiDAR, NPC 양보 판단)
+# enter: 진입 판정 인덱스(음영 시작 전에 미리 진입해 추측항법 기준점을 잡는다)
+ai_zones:
+  - {name: gps_shaded, mode: shaded,     enter: 3760, start: 3780, end: 3990}
+  - {name: roundabout, mode: roundabout, enter: 1755, start: 1765, end: 1865}
+
+# GPS 음영(재밍) 구간 — 구 버전 호환용. ai_zones 의 shaded 구간과 같게 둔다.
+jamming_zones: [[3760, 3990]]
 
 # 신호등 판단 구간 — 이 구간 안에서만 정지선/신호 판단을 한다.
+# 신호등 16개(시나리오 tlList)가 있으나 위치·정지선 좌표가 시나리오에 없다.
+# 한 바퀴 기록 후 정지선 좌표를 stop_lines 에 넣고 구간을 채울 것.
 traffic_zones: []
 
 # 정지선 좌표 [[x, y], ...] (지역 좌표 m, GPS 오프셋 차감 후).
-# 옛 상암맵 좌표([620, -722.1], [768.34, -829.0])는 K-City 와 무관하므로 옮기지 않았다.
 stop_lines: []
 
 # 장애물 토픽 기반 정지 인덱스 (controller). -1 = 비활성.
 obstacle_stop_index: -1
+
+# 제한 속도 [kph]. 규정 60 kph 초과 즉시 15초 패널티 → 여유를 둔 상한.
+speed_limit_kph: 55.0
 
 lattice:
   # 허용경로 2개 차선 구간
   special_zones: []
   # 곡선 단일 차선 구간 — 이 구간에서만 앞차 상대속도(/nearest_vrel)를 낸다.
   curve_single_lane: []
-  # 횡단보도 구간
-  crosswalk_zones: []
+  # 횡단보도 구간 (보행자 미션)
+  crosswalk_zones: [[895, 955]]
   # 끼어들기 감시 구간 [시작, 끝, 감시 방향(0=우측, 1=좌측)]
-  # ⚠️ 아래 값은 옛 상암맵 인덱스를 그대로 옮긴 것이다(기존 동작 유지 목적).
-  #    K-City 에서 실제 합류 구간인지 확인 후 교체하거나 비울 것.
-  #    lattice_planner_v2 의 MERGE_* 튜닝 리스트는 이 목록의 순서와 1:1 대응한다.
+  # lattice_planner_v2 의 MERGE_* 튜닝 리스트는 이 목록의 순서와 1:1 대응한다.
+  # (옛 상암맵 인덱스 [10,24] [370,385] [925,938] [1038,1050] 는 K-City 와 무관해 제거)
+  # 회전교차로는 AI 구간이 맡으므로 여기 넣지 않는다.
   merge_zones:
-    - [10, 24, 1]
-    - [370, 385, 0]
-    - [925, 938, 1]
-    - [1038, 1050, 0]
+    - [2140, 2260, 1]
