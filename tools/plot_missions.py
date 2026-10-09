@@ -5,7 +5,7 @@
 전역경로 위에 config/kcity_sections.yaml 의 missions / ai_zones 와,
 시나리오 json 의 장애물·보행자·NPC·음영 박스를 함께 그린다.
 
-  python3 tools/plot_missions.py [--scene <시나리오.json>] [--out ~/aisw_logs/missions.png]
+  python3 tools/plot_missions.py [--scene <시나리오.json>] [--out <파일.png>]   (기본: scenarios/ 샘플, $AISW_LOG_DIR)
 """
 import argparse
 import json
@@ -18,7 +18,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
-from aisw_common import DEFAULT_MAP, DEFAULT_SECTIONS, load_map_fields, load_sections, get_section  # noqa: E402
+from aisw_common import DEFAULT_MAP, DEFAULT_SECTIONS, LOG_DIR, SCENARIO_DIR, load_map_fields, load_sections, get_section  # noqa: E402
 
 COLORS = {'checkpoint': 'limegreen', 'lane_keep': 'olive', 'obstacle': 'red', 'intersection': 'orange',
           'roundabout': 'dodgerblue', 'merge': 'magenta', 'speed_limit': 'c', 'gps_shaded': 'dimgray'}
@@ -26,10 +26,9 @@ COLORS = {'checkpoint': 'limegreen', 'lane_keep': 'olive', 'obstacle': 'red', 'i
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--scene', default=os.path.expanduser(
-        '~/2026_AISW_morai/MoraiLauncher_Lin_Data/SaveFile/Scenario/R_KR_PR_K-city_2025/2026_molit_comp_sample_scene.json'))
+    ap.add_argument('--scene', default=os.path.join(SCENARIO_DIR, '2026_molit_comp_sample_scene.json'))
     ap.add_argument('--sections', default=DEFAULT_SECTIONS)
-    ap.add_argument('--out', default=os.path.expanduser('~/aisw_logs/missions.png'))
+    ap.add_argument('--out', default=os.path.join(LOG_DIR, 'missions.png'))
     args = ap.parse_args()
 
     rx, ry = load_map_fields(DEFAULT_MAP)[:2]

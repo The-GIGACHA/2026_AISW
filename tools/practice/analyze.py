@@ -3,7 +3,7 @@
 import csv, glob, math, os, sys
 import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts'))
-from aisw_common import load_map_fields
+from aisw_common import LOG_DIR, load_map_fields
 
 rx, ry = [np.array(a) for a in load_map_fields()[:2]]
 ryaw = np.arctan2(np.gradient(ry), np.gradient(rx))
@@ -23,7 +23,7 @@ def lat_err(x, y, idx):
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else max(glob.glob(os.path.expanduser('~/aisw_logs/run_*.csv')), key=os.path.getmtime)
+    path = sys.argv[1] if len(sys.argv) > 1 else max(glob.glob(os.path.join(LOG_DIR, 'run_*.csv')), key=os.path.getmtime)
     rows = list(csv.DictReader(open(path)))
     t = np.array([f(r['t']) for r in rows]); t -= t[0]
     idx = np.array([f(r['global_idx']) for r in rows])

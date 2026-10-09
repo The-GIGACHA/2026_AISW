@@ -22,7 +22,7 @@
   <arg name="cam" default="false"/>
   <!-- [2026_AISW] 전역경로 인덱스 구간 설정 (재밍/신호/합류 등). 다른 맵·시나리오면 덮어쓰기 -->
   <arg name="sections_file" default="$(find aisw_2026)/config/kcity_sections.yaml"/>
-  <!-- [2026_AISW] 주행 데이터 CSV 기록 (~/aisw_logs) — AI 학습 데이터 수집 시 record:=true -->
+  <!-- [2026_AISW] 주행 데이터 CSV 기록 (AISW_LOG_DIR, 기본 ~/aisw_logs) — AI 학습 데이터 수집 시 record:=true -->
   <arg name="record" default="false"/>
   <!-- [2026_AISW] 모든 회피 후보가 막혔을 때 정지 (연속 2사이클 확인). 기존 동작은 false -->
   <arg name="stop_on_blocked" default="false"/>
@@ -43,8 +43,6 @@
   <node pkg="aisw_2026" type="mission_markers.py" launch-prefix="$(arg python)" name="aisw_mission_markers" output="log"/>
 
   <env name="PYTHONUNBUFFERED" value="1"/>
-  <!-- 환경변수 스트리핑 대비: ROS 공유 라이브러리 경로 명시 -->
-  <env name="LD_LIBRARY_PATH" value="$(env HOME)/control_ws/devel/lib:$(env HOME)/26aisw_lidar_ws/devel/lib:/opt/ros/noetic/lib:/opt/ros/noetic/lib/x86_64-linux-gnu"/>
   <node pkg="aisw_2026" type="master_v2.py" launch-prefix="$(arg python)" name="master_controller_node"
         output="screen" respawn="true" cwd="node">
     <param name="ai_enable" value="$(arg ai_enable)"/>

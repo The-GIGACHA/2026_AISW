@@ -15,8 +15,8 @@
   /ctrl_cmd (morai_msgs/CtrlCmd) -> '#MoraiCtrlCmd$' -> 시뮬 127.0.0.1:9093
 
 사용:
-  source ~/catkin_ws/devel/setup.bash   # morai_msgs
-  rosrun 없이:  python3 ~/control_ws/src/erp_42/aisw_udp_bridge.py _cam:=false
+  source <morai_msgs 가 있는 워크스페이스>/devel/setup.bash
+  rosrun 없이:  python3 scripts/aisw_udp_bridge.py _cam:=false
 파라미터(rosparam ~네임스페이스):
   ~sim_ip (기본 127.0.0.1)  대회 당일 시뮬 PC IP로 변경
   ~ctrl_port 9093 | ~gps_port 9281 | ~imu_port 9283 | ~cam(false) | ~dump(true)

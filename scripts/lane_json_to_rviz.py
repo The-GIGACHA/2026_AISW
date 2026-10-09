@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import os
+_MAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'map')   # 패키지 map/ (PC 경로 하드코딩 제거)
+
 import os, json, rospy
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
@@ -33,8 +36,8 @@ GNSS 상태 표시(차량 구체 색):
 # ====== 설정 ======
 FRAME_ID = "map"     # RViz 고정 프레임
 UTM_ZONE = 52        # UTM 존
-MAP_JSON = "/home/yhj/catkin_ws/src/hlfma_morai/map/Sangam_1.json"  # HD맵 경로
-COMPARE_JSON = "/home/yhj/catkin_ws/src/hlfma_morai/map/sangam_bonseon_ver3.json" # 제공맵 경로
+MAP_JSON = os.path.join(_MAP_DIR, "Sangam_1.json")  # HD맵 경로
+COMPARE_JSON = os.path.join(_MAP_DIR, "sangam_bonseon_ver3.json") # 제공맵 경로
 # =================
 
 # ============= 각 레이어별 pts 저장 =============

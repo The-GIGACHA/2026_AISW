@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import os
+_MAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'map')   # 패키지 map/ (PC 경로 하드코딩 제거)
+
 import math
 import numpy as np
 import bisect
@@ -135,8 +138,8 @@ def map_maker():
     # VERSION = 1     # 입력좌표를 기준으로 전체 프로파일 생성
     VERSION = 2   # 기존 json파일을 불러와 미션/속도/기어만 업데이트
 
-    OUTPUT_JSON = '/home/yhj/catkin_ws/src/hlfma_morai/map/sangam_bonseon_hdmap_v2.json'
-    INPUT_JSON  = '/home/yhj/catkin_ws/src/hlfma_morai/map/sangam_bonseon_hdmap_v2.json'
+    OUTPUT_JSON = os.path.join(_MAP_DIR, 'sangam_bonseon_hdmap_v2.json')
+    INPUT_JSON  = os.path.join(_MAP_DIR, 'sangam_bonseon_hdmap_v2.json')
 
     # (x, y) 튜플 리스트
     xy = [

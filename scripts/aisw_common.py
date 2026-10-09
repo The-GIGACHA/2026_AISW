@@ -15,6 +15,9 @@ PKG_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)
 DEFAULT_MAP = os.path.join(PKG_DIR, 'map', 'kcity_map.json')
 DEFAULT_SECTIONS = os.path.join(PKG_DIR, 'config', 'kcity_sections.yaml')
 SECTIONS_PARAM = '/aisw/sections_file'   # launch 에서 덮어쓸 수 있는 전역 파라미터
+# 주행 로그 폴더: 환경변수 AISW_LOG_DIR 로 변경 가능 (기본: 사용자 홈의 aisw_logs)
+LOG_DIR = os.path.expanduser(os.environ.get('AISW_LOG_DIR', os.path.join('~', 'aisw_logs')))
+SCENARIO_DIR = os.path.join(PKG_DIR, 'scenarios')
 
 
 def load_map_fields(json_file=DEFAULT_MAP):

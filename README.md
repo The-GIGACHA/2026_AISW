@@ -14,15 +14,19 @@
 
 ## 빠른 시작
 
+> 코드에는 PC 별 경로를 넣지 않는다. 워크스페이스는 실행 전에 직접 source 하고,
+> 로그 폴더는 환경변수 `AISW_LOG_DIR` (기본 `~/aisw_logs`), 시나리오는 저장소 `scenarios/` 를 쓴다.
+
 ### 1. 처음 한 번만
 ```bash
 # Python 의존성 (Ubuntu 20.04 시스템 numpy 1.17 과 호환되는 버전)
 pip3 install --user --no-deps numba==0.53.1 llvmlite==0.36.0
 
 # catkin 워크스페이스에 패키지 연결 (morai_msgs 가 있는 워크스페이스 위에 올림)
-mkdir -p ~/aisw_ws/src && ln -s ~/2026_AISW ~/aisw_ws/src/aisw_2026
-source /opt/ros/noetic/setup.bash && source ~/taeho_ws/devel/setup.bash
-cd ~/aisw_ws && catkin_make
+# <WS> = 이 패키지를 넣을 catkin 워크스페이스, <REPO> = 이 저장소를 clone 한 경로, <MORAI_MSGS_WS> = morai_msgs 가 빌드된 워크스페이스
+mkdir -p <WS>/src && ln -s <REPO> <WS>/src/aisw_2026
+source /opt/ros/noetic/setup.bash && source <MORAI_MSGS_WS>/devel/setup.bash
+cd <WS> && catkin_make
 
 # Competition Vehicle Status 포트 909 는 특권 포트 → 일반 사용자 bind 허용
 sudo sysctl -w net.ipv4.ip_unprivileged_port_start=908
@@ -49,8 +53,8 @@ sudo sysctl -w net.ipv4.ip_unprivileged_port_start=908
 ### 3. 실행
 ```bash
 source /opt/ros/noetic/setup.bash
-source ~/taeho_ws/devel/setup.bash
-source ~/aisw_ws/devel/setup.bash
+source <MORAI_MSGS_WS>/devel/setup.bash
+source <WS>/devel/setup.bash
 roslaunch aisw_2026 aisw_midterm.launch sim_ip:=127.0.0.1
 ```
 
@@ -61,7 +65,7 @@ roslaunch aisw_2026 aisw_midterm.launch sim_ip:=127.0.0.1
 | `lidar_x` | `0.58` | 후륜축 → 라이다 거리 [m] (공식 센서 파일 기준) |
 | `ai_enable` | `true` | AI 구간에서 학습 정책 사용. `false` 면 룰 폴백만 |
 | `model_dir` | `models/` | 학습 정책 위치 (`shaded.npz`, `roundabout.npz`) |
-| `record` | `false` | 주행 데이터 CSV 기록 (`~/aisw_logs`) |
+| `record` | `false` | 주행 데이터 CSV 기록 (`$AISW_LOG_DIR`, 기본 `~/aisw_logs`) |
 | `cam` | `false` | 카메라 3대 → `/image_jpeg{,_left,_right}/compressed` |
 | `stop_on_blocked` | `false` | 회피 후보가 모두 막히면 정지 |
 
@@ -134,7 +138,7 @@ MORAI ──UDP──▶ aisw_udp_bridge ──/gps /imu /Competition_topic /ais
 | **GPS 음영** | **3780~3974** | 시나리오 음영 박스 |
 | 완주 | 4391 | 규정 (제한 15분) |
 
-- 확인용 그림: `python3 tools/plot_missions.py` → `~/aisw_logs/missions.png`
+- 확인용 그림: `python3 tools/plot_missions.py` → `$AISW_LOG_DIR/missions.png`
 - 인덱스 찾기: `python3 tools/find_index.py <x> <y>`
 - **추정 항목 확정 방법**: `record:=true` 로 한 바퀴 → `python3 tools/link_index_table.py` (link_id ↔ 인덱스 표, 속도 예외 구간 자동 계산)
 - 비어 있음: 신호등 정지선(`stop_lines`, `traffic_zones`), 체크포인트 좌표
@@ -221,7 +225,7 @@ NPC 가 있을 때 멈췄다 진입하는 주행이 로그에 충분히 있어�
 - 래티스 기준 5바퀴 연속 완주, 충돌 0, 바퀴 7.2~8.2분, 회전교차로는 AI 정책 주행
 
 ## 연습 도구 (`tools/practice/`, `scenarios/`)
-- `run_stack.sh <태그> [planner:=frenet]` / `stop_stack.sh`: roscore 포함 스택 실행·정지 (로그 ~/aisw_logs/practice/launch_<태그>.log)
+- `run_stack.sh <태그> [planner:=frenet]` / `stop_stack.sh`: roscore 포함 스택 실행·정지 (먼저 워크스페이스 source, 로그 `$AISW_LOG_DIR/practice/launch_<태그>.log`)
 - `watch.py`: 주행 감시(충돌·정지·바퀴 완주·오류), `analyze.py`: 구간별 횡오차·조향률, `compare_multi.py A.csv B.csv`: 여러 바퀴 비교
 - `dr_eval.py`: 음영 구간 추측항법 오차(검증용 기준위치 대비), `recover.py [kph] [목표idx]`: 스택 끈 상태로 차를 경로 위로 복귀
 - `frenet_sim.py`: Frenet 오프라인 4개 시나리오, `merge_mc.py`: 회전교차로 끼어들기 몬테카를로(현재 Frenet 양보 규칙 충돌 9% — 개선 예정)

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """주행 감시: 60초마다 진행 1줄, 충돌/정지/노드 오류/랩 완료 즉시 1줄."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts'))
+from aisw_common import LOG_DIR
 import csv, glob, os, subprocess, sys, time
 LOG = sys.argv[1] if len(sys.argv) > 1 else None
 start = time.time()
@@ -19,7 +22,7 @@ def f(v):
 
 while True:
     time.sleep(2)
-    files = glob.glob(os.path.expanduser('~/aisw_logs/run_*.csv'))
+    files = glob.glob(os.path.join(LOG_DIR, 'run_*.csv'))
     if not files:
         continue
     path = max(files, key=os.path.getmtime)

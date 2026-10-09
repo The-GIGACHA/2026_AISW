@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-input_file = "/home/yhj/catkin_ws/src/hlfma_morai/map/25hl_global_path_ver3.txt"
-output_file = "/home/yhj/catkin_ws/src/hlfma_morai/map/25hl_global_path_ver3_xy_split.txt"
+import os
+_MAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'map')   # 패키지 map/ (PC 경로 하드코딩 제거)
+
+input_file = os.path.join(_MAP_DIR, "25hl_global_path_ver3.txt")
+output_file = os.path.join(_MAP_DIR, "25hl_global_path_ver3_xy_split.txt")
 
 with open(input_file, "r") as f:
     lines = f.readlines()

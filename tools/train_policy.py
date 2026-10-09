@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 """[2026_AISW] AI 구간 정책 학습 (행동 복제, numpy 전용 — torch 불필요).
 
-data_recorder 로그(~/aisw_logs/run_*.csv)에서 해당 AI 구간(ai_zones 의 mode) 주변 행만 골라
+data_recorder 로그($AISW_LOG_DIR/run_*.csv, 기본 ~/aisw_logs)에서 해당 AI 구간(ai_zones 의 mode) 주변 행만 골라
   입력 = ai.features.build_features (경로 미리보기 + 속도/yaw rate + LiDAR 스캔)
   정답 = [/ctrl_cmd 조향(rad), label_shift 초 뒤 실제 속도(m/s)]
 로 MLP 를 학습해 models/<mode>.npz 로 저장한다. master_v2 가 다음 실행 때 자동으로 읽는다.
 
 사용:
   python3 tools/train_policy.py --mode shaded
-  python3 tools/train_policy.py --mode roundabout --logs ~/aisw_logs/run_2026*.csv --epochs 400
+  python3 tools/train_policy.py --mode roundabout --logs <로그폴더>/run_2026*.csv --epochs 400
 
 정답의 질 = 시연 주행의 질이다. 회전교차로에서 '양보'를 배우게 하려면, NPC 가 있을 때
 멈췄다 들어가는 주행(룰 서행 + 수동 개입 또는 튜닝된 룰)이 로그에 충분히 있어야 한다.
@@ -24,7 +24,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
-from aisw_common import DEFAULT_MAP, DEFAULT_SECTIONS, PKG_DIR, load_map_fields, load_sections, get_section  # noqa: E402
+from aisw_common import DEFAULT_MAP, DEFAULT_SECTIONS, LOG_DIR, PKG_DIR, load_map_fields, load_sections, get_section  # noqa: E402
 from ai.features import FEATURE_DIM, FEATURE_VERSION, SCAN_BINS, PathPreview, build_features  # noqa: E402
 from ai.policy import MLPPolicy, forward_train  # noqa: E402
 
@@ -115,7 +115,7 @@ def train(Xn, Yn, Xv, Yv, hidden, epochs, lr, batch, seed=0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--mode', required=True, choices=['shaded', 'roundabout'])
-    ap.add_argument('--logs', nargs='*', default=None, help='기본 ~/aisw_logs/run_*.csv')
+    ap.add_argument('--logs', nargs='*', default=None, help='기본 $AISW_LOG_DIR/run_*.csv')
     ap.add_argument('--sections', default=DEFAULT_SECTIONS)
     ap.add_argument('--margin', type=int, default=20, help='구간 앞뒤로 더 쓰는 인덱스 수')
     ap.add_argument('--label_shift', type=float, default=0.5, help='목표속도 정답 = 이 시간 뒤 실제 속도 [s]')
@@ -132,7 +132,7 @@ def main():
         sys.exit('ai_zones 에 mode=%s 구간이 없음' % args.mode)
     lo = min(int(z['enter']) for z in zones) - args.margin
     hi = max(int(z['end']) for z in zones) + args.margin
-    files = sorted(args.logs if args.logs else glob.glob(os.path.expanduser('~/aisw_logs/run_*.csv')))
+    files = sorted(args.logs if args.logs else glob.glob(os.path.join(LOG_DIR, 'run_*.csv')))
     if not files:
         sys.exit('로그가 없음 — roslaunch aisw_2026 aisw_midterm.launch record:=true 로 먼저 주행 기록')
 

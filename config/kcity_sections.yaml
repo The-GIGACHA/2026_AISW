@@ -3,7 +3,7 @@
 #
 # - 구간은 [시작 인덱스, 끝 인덱스] (양 끝 포함). 빈 리스트 = 해당 기능 비활성.
 # - 인덱스 확인: python3 tools/find_index.py <x> <y>   또는   --csv <data_recorder 로그>
-# - 미션 위치 그림: python3 tools/plot_missions.py  →  ~/aisw_logs/missions.png
+# - 미션 위치 그림: python3 tools/plot_missions.py  →  $AISW_LOG_DIR/missions.png
 # - 다른 파일을 쓰려면: roslaunch aisw_2026 aisw_midterm.launch sections_file:=<경로>
 # - 노드 개별 파라미터(~jamming_zone_start 등)가 설정돼 있으면 그쪽이 우선한다.
 #

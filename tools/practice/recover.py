@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """연습용 복구 주행: 스택이 꺼진 상태에서 차를 전역경로로 되돌려 GPS 가 다시 잡힐 때까지(또는 목표 인덱스까지) 저속 주행.
 위치 = CollisionData 패킷의 자차 위치(음영에서도 나옴), 방향 = Status yaw. 대회 스택과 무관한 연습 도구."""
-import math, socket, struct, sys, time
+import math, os, socket, struct, sys, time
 import numpy as np
-import os; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts'))
 from aisw_common import load_map_fields
 
 rx, ry = [np.array(a) for a in load_map_fields()[:2]]

@@ -78,7 +78,7 @@ sysctl net.ipv4.ip_unprivileged_port_start   # 908이어야 함 (909 포트 수�
 - [ ] 완료
 
 ```bash
-cd ~/control_ws/src/2026_AISW/tools
+cd <저장소>/tools
 python3 morai_site_check.py
 python3 morai_site_check.py --scan     # 수신 없는 채널이 있으면: 실제 도착 포트 탐색
 ```
@@ -124,7 +124,7 @@ python3 morai_site_check.py --steer --sim-ip <시뮬PC_IP>
 카메라까지 켠 전체 부하 상태로 주행합니다.
 
 ```bash
-source ~/control_ws/devel/setup.bash
+source <aisw 워크스페이스>/devel/setup.bash
 roslaunch aisw_2026 aisw_midterm.launch python:=/usr/bin/python3 sim_ip:=<시뮬PC_IP> cam:=true
 # 조향 이득이 다르게 측정됐으면: ... steer_scale:=<1/측정이득>
 
@@ -251,4 +251,4 @@ GPS 음영(제밍)구역입니다. 현재는 좌표 0이 들어오면 /gps 발�
 
 ---
 
-기준 코드: `~/control_ws/src/2026_AISW` (aisw_2026) · 점검 도구: `tools/morai_site_check.py` · 카메라 조립: `scripts/morai_camera.py`
+기준 코드: 저장소 `2026_AISW` (패키지 aisw_2026) · 점검 도구: `tools/morai_site_check.py` · 카메라 조립: `scripts/morai_camera.py`

@@ -11,7 +11,7 @@
 import csv, glob, os, sys
 import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
-from aisw_common import DEFAULT_MAP, PKG_DIR, load_map_fields
+from aisw_common import DEFAULT_MAP, LOG_DIR, PKG_DIR, load_map_fields
 
 BIN = 10          # 인덱스 묶음 (0.5 m 간격 → 5 m)
 MIN_OBS = 3       # 칸당 최소 관측 수
@@ -19,7 +19,7 @@ MAX_GAP_BINS = 6  # 이보다 긴 빈 구간(30 m)은 보간하지 않음
 
 
 def main():
-    files = sys.argv[1:] or sorted(glob.glob(os.path.expanduser('~/aisw_logs/edges_*.csv')))
+    files = sys.argv[1:] or sorted(glob.glob(os.path.join(LOG_DIR, 'edges_*.csv')))
     n = len(load_map_fields(DEFAULT_MAP)[0])
     nb = (n + BIN - 1) // BIN
     L = [[] for _ in range(nb)]; R = [[] for _ in range(nb)]

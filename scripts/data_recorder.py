@@ -17,7 +17,7 @@ ROS bag 대신 CSV 를 쓰는 이유: 학습 스크립트(pandas)에서 바로 �
 대용량 토픽(LiDAR/카메라)을 같이 저장하지 않아 디스크/CPU 부담이 없다.
 
 실행: roslaunch aisw_2026 aisw_midterm.launch record:=true
-출력: ~/aisw_logs/run_YYYYmmdd_HHMMSS.csv  (~log_dir 로 변경)
+출력: $AISW_LOG_DIR(기본 ~/aisw_logs)/run_YYYYmmdd_HHMMSS.csv  (~log_dir 파라미터로 변경)
 """
 import csv
 import math
@@ -34,7 +34,7 @@ from std_msgs.msg import Bool, Float32, Float32MultiArray, String, UInt8
 from tf.transformations import euler_from_quaternion
 from vision_msgs.msg import Detection3DArray
 
-from aisw_common import DEFAULT_MAP, NearestIndexer, load_map_fields
+from aisw_common import DEFAULT_MAP, LOG_DIR, NearestIndexer, load_map_fields
 from ai.features import SCAN_BINS
 
 N_CANDIDATES = 9   # lattice_planner_v2 Parameter.dd_sampling_num
@@ -55,7 +55,7 @@ class DataRecorder:
     def __init__(self):
         rospy.init_node('aisw_data_recorder')
         self.rate_hz = rospy.get_param('~rate', 15.0)
-        log_dir = os.path.expanduser(rospy.get_param('~log_dir', '~/aisw_logs'))
+        log_dir = os.path.expanduser(rospy.get_param('~log_dir', LOG_DIR))
         os.makedirs(log_dir, exist_ok=True)
         self.path = os.path.join(log_dir, time.strftime('run_%Y%m%d_%H%M%S.csv'))
 

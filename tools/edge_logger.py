@@ -3,19 +3,20 @@
 """[2026_AISW] 도로 경계 지도 기록: /aisw/road_edges([좌, 우] 자차 기준 횡거리) + /aisw/ego_pose
 → 전역경로 인덱스별 좌/우 경계 거리 CSV. 여러 바퀴 돌린 뒤 tools/build_edge_map.py 로 지도화.
 
-  rosrun 없이: python3 tools/edge_logger.py   (~/aisw_logs/edges_YYYYmmdd_HHMMSS.csv)
+  rosrun 없이: python3 tools/edge_logger.py   ($AISW_LOG_DIR/edges_YYYYmmdd_HHMMSS.csv)
 """
 import csv, math, os, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 import rospy
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float32MultiArray
-from aisw_common import DEFAULT_MAP, NearestIndexer, load_map_fields
+from aisw_common import DEFAULT_MAP, LOG_DIR, NearestIndexer, load_map_fields
 
 rx, ry = load_map_fields(DEFAULT_MAP)[:2]
 idxr = NearestIndexer(rx, ry)
 state = {'pose': None}
-path = os.path.expanduser(time.strftime('~/aisw_logs/edges_%Y%m%d_%H%M%S.csv'))
+os.makedirs(LOG_DIR, exist_ok=True)
+path = os.path.join(LOG_DIR, time.strftime('edges_%Y%m%d_%H%M%S.csv'))
 f = open(path, 'w', newline=''); w = csv.writer(f); w.writerow(['t', 'idx', 'x', 'y', 'yaw', 'left', 'right', 'path_off'])
 
 

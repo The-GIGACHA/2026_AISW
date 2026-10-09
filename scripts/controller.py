@@ -50,10 +50,6 @@ class Parameter:
 
     # 추종할 맵 json파일 경로
     INPUT_JSONS = [
-        # '/home/yhj/catkin_ws/src/alpha_one/scripts/wonju_map_final_1.json',
-        # '/home/yhj/catkin_ws/src/alpha_one/scripts/wonju_map_final_2.json',
-        # '/home/yhj/catkin_ws/src/alpha_one/scripts/wonju_map_final_3.json',
-        # '/home/yhj/catkin_ws/src/hlfma_morai/map/sangam_bonseon_ver3.json'
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'map', 'kcity_map.json')
     ]
     # 초기 맵 설정

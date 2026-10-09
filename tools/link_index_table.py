@@ -5,7 +5,7 @@
 규정의 속도 예외 구간(A2256W000411 시작점 ~ A2256W000153 끝점)처럼 링크 ID 로만
 주어진 위치를 인덱스로 바꾸는 용도. MGeo 링크 좌표가 없어서 실제 주행에서 측정한다.
 
-  python3 tools/link_index_table.py [로그.csv ...]      (기본 ~/aisw_logs/run_*.csv)
+  python3 tools/link_index_table.py [로그.csv ...]      (기본 $AISW_LOG_DIR/run_*.csv)
 """
 import csv
 import glob
@@ -16,7 +16,9 @@ SPEED_EXEMPT = ('A2256W000411', 'A2256W000153')   # 규정집 v1.1 3-2 속도 �
 
 
 def main():
-    files = sys.argv[1:] or sorted(glob.glob(os.path.expanduser('~/aisw_logs/run_*.csv')))
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
+    from aisw_common import LOG_DIR
+    files = sys.argv[1:] or sorted(glob.glob(os.path.join(LOG_DIR, 'run_*.csv')))
     if not files:
         sys.exit('로그 없음 — record:=true 로 한 바퀴 주행 후 실행')
     table = {}   # link → [첫 등장 인덱스, 최소, 최대]

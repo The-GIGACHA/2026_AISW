@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+_MAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'map')   # 패키지 map/ (PC 경로 하드코딩 제거)
+
+import os
 
 # 입력/출력 경로 설정
-IN_PATH = "/home/yhj/catkin_ws/src/hlfma_morai/map/25hl_global_path_ver2.txt"
-# IN_PATH = "/home/yhj/catkin_ws/src/hlfma_morai/map/Sangam_1_center_pts_1_2_route_xy_split.txt"
+IN_PATH = os.path.join(_MAP_DIR, "25hl_global_path_ver2.txt")
 OUT_PATH = os.path.join(os.path.dirname(IN_PATH), "25hl_global_path_ver2_xy_split.txt")
 
 def main():
