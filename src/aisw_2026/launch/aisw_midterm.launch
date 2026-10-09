@@ -1,0 +1,57 @@
+<!-- 본선 제어 런치: UDP 브리지 + 장애물 + Frenet 플래너 + 메인 판단·제어.
+     LiDAR 인지는 26aisw_lidar_ws 의 roslaunch LiDAR_perception main.launch 를 따로 띄운다.
+     로그 기록(record)·RViz 마커(viz)는 tools/ 의 선택 노드 -->
+<launch>
+  <!-- 시뮬 PC IP (ctrl_cmd 송신 대상). 수신은 0.0.0.0 바인딩이라 무관. 같은 PC 면 127.0.0.1 -->
+  <arg name="sim_ip" default="192.168.0.1"/>
+  <!-- 노드 셔뱅이 다른 PC 경로인 경우 python:=/usr/bin/python3 (cwd="node" 때문에 절대경로) -->
+  <arg name="python" default=""/>
+  <!-- 장애물 출처 → /aisw/obstacles
+       morai: MORAI Object Info (UDP 7505, 시뮬 개발용 — NPC 속도 정답 포함, 대회 허용 입력 아님)
+       lidar: 26aisw_lidar_ws 클러스터 /Clustered_cloud (본선) -->
+  <arg name="obstacles" default="morai"/>
+  <!-- 회전교차로 진입 판단에 학습 모델 사용 (models/roundabout_entry.npz, tools/test/roundabout/train_entry.py 가 만든다). 없거나 false 면 기본 규칙 -->
+  <arg name="ai_enable" default="true"/>
+  <arg name="model_dir" default="$(find aisw_2026)/models"/>
+  <!-- MORAI 조향 이득 보상 = 1/실측이득 (로컬 25.S4.MolitComp03: 0.575). 현장은 tools/test/morai_site_check.py 로 재측정 -->
+  <arg name="steer_scale" default="1.7391"/>
+  <!-- 카메라 3대 UDP 9291/9293/9295 → /image_jpeg{,_left,_right}/compressed -->
+  <arg name="cam" default="false"/>
+  <!-- 전역경로 인덱스 구간 설정 (AI 구간/신호/합류/속도 등) -->
+  <arg name="sections_file" default="$(find aisw_2026)/config/kcity_sections.yaml"/>
+  <!-- [선택] 주행 데이터 CSV 기록 (tools/log/data_recorder.py → $AISW_LOG_DIR, 기본 ~/aisw_logs) -->
+  <arg name="record" default="false"/>
+  <!-- [선택] 미션 위치 RViz 마커 (tools/viz/mission_markers.py → /aisw/mission_markers) -->
+  <arg name="viz" default="false"/>
+
+  <param name="/aisw/sections_file" value="$(arg sections_file)"/>
+  <env name="PYTHONUNBUFFERED" value="1"/>
+
+  <!-- ===== 본선 판단·제어 (scripts/) ===== -->
+  <node pkg="aisw_2026" type="udp_bridge.py" launch-prefix="$(arg python)" name="udp_bridge" output="screen" respawn="true">
+    <param name="sim_ip" value="$(arg sim_ip)"/>
+    <param name="steer_scale" value="$(arg steer_scale)"/>
+    <param name="cam" value="$(arg cam)"/>
+  </node>
+
+  <!-- 장애물 → /aisw/obstacles (obstacles 인자로 하나만 실행) -->
+  <node pkg="aisw_2026" type="lidar_clusters.py" launch-prefix="$(arg python)" name="lidar_clusters" output="screen" respawn="true"
+        if="$(eval arg('obstacles') == 'lidar')"/>
+  <node pkg="aisw_2026" type="morai_objects.py" launch-prefix="$(arg python)" name="morai_objects" output="screen" respawn="true"
+        if="$(eval arg('obstacles') == 'morai')"/>
+
+  <node pkg="aisw_2026" type="master.py" launch-prefix="$(arg python)" name="master" output="screen" respawn="true" cwd="node">
+    <param name="ai_enable" value="$(arg ai_enable)"/>
+    <param name="model_dir" value="$(arg model_dir)"/>
+  </node>
+
+  <!-- 경로계획 (Frenet 샘플링 + 장애물 예측 + 속도 상한) -->
+  <node pkg="aisw_2026" type="frenet_planner.py" launch-prefix="$(arg python)" name="frenet_planner"
+        output="screen" respawn="true" cwd="node"/>
+
+  <!-- ===== 선택: 로그·시각화 (tools/) ===== -->
+  <node pkg="aisw_2026" type="data_recorder.py" launch-prefix="$(arg python)" name="data_recorder"
+        output="screen" if="$(arg record)"/>
+  <node pkg="aisw_2026" type="mission_markers.py" launch-prefix="$(arg python)" name="mission_markers"
+        output="log" if="$(arg viz)"/>
+</launch>
