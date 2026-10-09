@@ -22,9 +22,12 @@ class FrenetParams:
     d_step = 0.25                  # 횡 목표 간격 [m]
     d_left_max = 3.5               # 좌측 최대 횡이동 (약 1개 차로, 도로 경계가 있으면 그쪽이 우선) [m]
     d_right_max = 1.0              # 우측 최대 (경계 정보가 없을 때) [m]
+    d_side_max = 3.5               # 경계를 실측했을 때 좌우 최대 횡이동 [m]
     edge_margin = 0.35             # 도로 경계와 차체 사이 최소 여유 [m]
     trans_len = (1.6, 2.6)         # 횡 전이 거리 = max(최소, 계수 x 속도[m/s]) 후보들의 계수
     trans_min = (10.0, 16.0)       # 전이 거리 최소값 [m]
+    free_len_min = 6.0             # 장애물 없을 때 중심 복귀 전이 거리 최소 [m]
+    free_len_coef = 1.0            # 장애물 없을 때 전이 거리 = 계수 x 속도[m/s]
     clear_lat = 0.3                # 객체와 차체 사이 최소 횡여유 (넘으면 충돌로 간주) [m]
     prox_sigma = 1.2               # 근접 비용 폭 [m]
     w_prox = 30.0
@@ -35,7 +38,7 @@ class FrenetParams:
     w_curv = 200.0                 # 최대 곡률^2
     stop_gap = 4.0                 # 정지 시 앞범퍼-객체 간격 [m]
     decel = 2.5                    # 속도 상한 계산용 감속도 [m/s^2]
-    obj_speed_static = 0.7         # 이보다 느린 객체는 정지로 본다 [m/s]
+    obj_speed_static = 1.2         # 이보다 느린 객체는 정지로 본다 [m/s]. 0.7 은 추적 잡음으로 길가 물체를 이동 객체로 오판(도심 감속)
 
 
 class RefPath:
@@ -111,11 +114,11 @@ class FrenetPlanner:
         ss = np.arange(0.0, p.horizon + 1e-6, p.ds)
 
         # 횡 허용 범위: 경계(자차 기준) → 경로 기준으로 환산
-        d_hi, d_lo = p.d_left_max, -p.d_right_max
-        if math.isfinite(edges[0]):
-            d_hi = min(d_hi, d0 + edges[0] - HALF_W - p.edge_margin)
-        if math.isfinite(edges[1]):
-            d_lo = max(d_lo, d0 + edges[1] + HALF_W + p.edge_margin)
+        # 경계를 실측했으면 경계까지(최대 d_side_max), 모르면 좌 d_left_max / 우 d_right_max
+        d_hi = (min(p.d_side_max, d0 + edges[0] - HALF_W - p.edge_margin) if math.isfinite(edges[0])
+                else p.d_left_max)
+        d_lo = (max(-p.d_side_max, d0 + edges[1] + HALF_W + p.edge_margin) if math.isfinite(edges[1])
+                else -p.d_right_max)
         d_lo = min(d_lo, 0.0); d_hi = max(d_hi, 0.0)       # 중심선은 항상 후보
         targets = np.unique(np.concatenate([np.arange(0.0, d_hi + 1e-6, p.d_step),
                                             -np.arange(p.d_step, -d_lo + 1e-6, p.d_step)]))
@@ -135,9 +138,13 @@ class FrenetPlanner:
         # 길가 물체(가로등·표지판·경계석)가 경로를 밀어내지 않게: 차로 안(|d|<=gate) 정지 물체만 경로 모양에 반영
         statics = [o for o in objs if not o[6] and abs(o[1]) - o[5] <= p.obj_d_gate]
         best = None
-        for coef, mn in zip(p.trans_len, p.trans_min):
-            L = max(mn, coef * v_ref)
-            for dT in targets:
+        # 차로 안 정지 물체가 없으면 중심선으로 짧게 복귀(교정력 유지): 16 m 전이로 일반 구간 횡오차가
+        # 래티스(0.12~0.17 m)보다 커지던 것(0.2~0.3 m) 개선 (2026-10-09 비교 주행)
+        plans = [(max(mn, coef * v_ref), targets) for coef, mn in zip(p.trans_len, p.trans_min)]
+        if not statics and abs(d0) < 1.5:
+            plans = [(max(p.free_len_min, p.free_len_coef * v_ref), np.array([0.0]))]
+        for L, cand in plans:
+            for dT in cand:
                 d, d1, d2 = quintic_lateral(d0, dd0, dT, L, ss)
                 cost, _ = self._eval(ss, d, statics, v_ref)   # 경로 모양 = 차로 안 정지 물체만
                 cost += p.w_center * dT ** 2 + p.w_change * (dT - self.prev_dT) ** 2
@@ -218,6 +225,10 @@ class FrenetPlanner:
             along = (ds_ > -REAR - hl) & (ds_ < FRONT + hl)
             lat = np.abs(pd - d) - HALF_W - hw         # 차체-객체 횡여유
             hit = along & (lat < p.clear_lat)
+            # 이미 차 옆/뒤에 있는 물체(뒤끝이 앞범퍼보다 뒤)는 서도 소용없음 → 충돌·정지 판단 제외, 근접 비용만.
+            # (보행자 구간에서 옆 1.6~2.1 m 물체로 정지 상한 0 이 걸려 제자리 서행, 2026-10-09)
+            if rs - hl < FRONT - 0.3 and not moving:
+                hit = hit & False
             if hit.any():
                 k = int(np.argmax(hit))
                 sh = ss[k] + max(0.0, ds_[k])

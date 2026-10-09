@@ -21,13 +21,16 @@ from aisw_common import DEFAULT_MAP, load_map_fields
 from planner.frenet_planner import FrenetPlanner, RefPath
 
 
+HOLD_S = 2.0   # 장애물 기억 시간 [s]
+
+
 class Node:
     def __init__(self):
         rospy.init_node('lattice_planner')   # 기존 노드 이름 유지 (launch/모니터 호환)
         rx, ry = load_map_fields(DEFAULT_MAP)[:2]
         self.planner = FrenetPlanner(RefPath(rx, ry))
         self.pose = None; self.pose_t = 0.0; self.prev = None; self.ego_v = 0.0
-        self.dets = []; self.dets_t = 0.0
+        self.dets = []; self.dets_t = 0.0; self.mem = []
         self.edges = (float('nan'), float('nan'))
         self.ai_active = False
         self.path_pub = rospy.Publisher('/local_path', Path, queue_size=1)
@@ -62,7 +65,13 @@ class Node:
                 _, vx, vy, _ = struct.unpack('ffff', d.source_cloud.data)
             out.append((x + c * lx - s * ly, y + s * lx + c * ly, vx, vy,
                         d.bbox.size.x / 2.0, d.bbox.size.y / 2.0))
-        self.dets = out; self.dets_t = rospy.get_time()
+        # 장애물 기억: LiDAR 3 Hz 깜빡임/근접 시 소실로 정지 상한이 풀려 장애물로 굴러가던 것 방지(2026-10-09).
+        # 이번 감지와 1.5 m 이내 겹치는 기억은 새 값으로 대체, 나머지는 HOLD_S 동안 유지(월드 좌표라 정지 물체에 정확).
+        now = rospy.get_time()
+        keep = [(t, o) for (t, o) in self.mem if now - t <= HOLD_S
+                and all(math.hypot(o[0] - n[0], o[1] - n[1]) > 1.5 for n in out)]
+        self.mem = keep + [(now, o) for o in out]
+        self.dets = [o for _, o in self.mem]; self.dets_t = now
 
     def _edges(self, m):
         if len(m.data) >= 2:
@@ -79,7 +88,7 @@ class Node:
             now = rospy.get_time()
             if self.ai_active or self.pose is None or now - self.pose_t > 0.5:
                 continue
-            objs = self.dets if now - self.dets_t < 1.0 else []
+            objs = [o for t, o in self.mem if now - t <= HOLD_S]
             t0 = time.time()
             res = self.planner.plan(*self.pose, self.ego_v, objs, self.edges)
             dt_ms = (time.time() - t0) * 1000
