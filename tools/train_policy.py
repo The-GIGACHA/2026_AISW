@@ -29,6 +29,10 @@ from ai.features import FEATURE_DIM, FEATURE_VERSION, SCAN_BINS, PathPreview, bu
 from ai.policy import MLPPolicy, forward_train  # noqa: E402
 
 
+MIN_SPEED = 0.5        # [m/s] 이보다 느린 행 제외
+MAX_POSE_ERR = 5.0     # [m] 추정 위치 vs 검증 기준위치 차이가 이보다 큰 행 제외 (추측항법이 크게 틀어진 주행만 거른다)
+
+
 def _f(row, key):
     try:
         v = float(row.get(key, 'nan'))
@@ -37,7 +41,7 @@ def _f(row, key):
     return v
 
 
-def load_run(path, preview, lo, hi, shift_s):
+def load_run(path, preview, lo, hi, shift_s, include_ai=False):
     with open(path) as f:
         rows = list(csv.DictReader(f))
     t = np.array([_f(r, 't') for r in rows])
@@ -50,6 +54,13 @@ def load_run(path, preview, lo, hi, shift_s):
         x, y, yaw, v, yr, steer = (_f(r, k) for k in ('x', 'y', 'yaw_deg', 'vel', 'yaw_rate', 'cmd_steer'))
         if not all(math.isfinite(a) for a in (x, y, yaw, v, steer)):
             continue
+        if not include_ai and ':ai' in r.get('drive_mode', ''):
+            continue               # 정책 자신이 몬 행 제외 (자기 모방 방지) — --include_ai 로 포함
+        if v < MIN_SPEED:          # 정지/걸림 구간은 배울 게 없고 잘못된 조향(최대각 고정)만 남긴다
+            continue
+        tx, ty = _f(r, 'truth_x'), _f(r, 'truth_y')
+        if math.isfinite(tx) and math.hypot(x - tx, y - ty) > MAX_POSE_ERR:
+            continue               # 위치 추정이 틀린 상태의 시연은 제외 (검증용 기준위치가 기록된 로그만)
         j = int(np.searchsorted(t, t[i] + shift_s))
         if j >= len(rows) or not math.isfinite(vel[j]):
             continue
@@ -113,6 +124,7 @@ def main():
     ap.add_argument('--lr', type=float, default=1e-3)
     ap.add_argument('--batch', type=int, default=256)
     ap.add_argument('--out', default=None, help='기본 models/<mode>.npz')
+    ap.add_argument('--include_ai', action='store_true', help='정책이 직접 몬 행도 학습에 포함')
     args = ap.parse_args()
 
     zones = [z for z in get_section(load_sections(args.sections), 'ai_zones', []) if z.get('mode') == args.mode]
@@ -128,7 +140,7 @@ def main():
     preview = PathPreview(rx, ry)
     runs = []
     for p in files:
-        X, Y = load_run(p, preview, lo, hi, args.label_shift)
+        X, Y = load_run(p, preview, lo, hi, args.label_shift, args.include_ai)
         print('%s: %d행 (인덱스 %d~%d)' % (os.path.basename(p), len(X), lo, hi))
         if len(X):
             runs.append((X, Y))

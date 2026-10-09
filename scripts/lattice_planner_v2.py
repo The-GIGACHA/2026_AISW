@@ -39,6 +39,11 @@ from aisw_common import load_map_fields, ros_sections, get_section
 # Parameter 객체 (전역변수)
 OBS_HOLD_S = 1.5   # [2026_AISW] 장애물 기억 시간 [s] (obs_callback)
 OBS_S_RANGE = (-2.0, 30.0)   # [2026_AISW] 래티스 모드를 켜는 장애물의 경로 방향 범위 [m] (자차 기준)
+BLEND_D_MIN = 1.0            # [2026_AISW] 이 횡편차 이상일 때만 복귀 블렌딩 [m]
+BLEND_MIN_M = 20.0           # [2026_AISW] 전역 복귀 블렌딩 최소 거리 [m]
+BLEND_PER_MPS = 4.0          # [2026_AISW] 복귀 블렌딩 거리 = 속도[m/s] x 이 값 (최소 BLEND_MIN_M)
+RETURN_TIMEOUT_S = 3.0       # [2026_AISW] 장애물 없이 이 시간 지나면 횡편차 무관 전역 복귀 [s]
+RETURN_D_MAX = 0.5           # [2026_AISW] 래티스→전역 전환 허용 횡편차 [m]
 LATERAL_LANES = 1.0          # [2026_AISW] 래티스 횡방향 최대 이동 차로 수
 OBS_D_GATE = 2.0             # [2026_AISW] 래티스 모드를 켜는 장애물 중심의 경로 횡거리 한계 [m] (차 반폭 0.95 + 여유 0.6 + 물체 반폭 ~0.5). 2.8 은 길가 물체로 1200~1600 내내 래티스 유지(2026-10-09)
 
@@ -547,6 +552,8 @@ class LatticePlanner:
             #     distance_from_avoidance if self.last_avoidance_position else 0
             # ))
 
+        if obstacles_nearby:
+            self._clear_since = None
         # 히스테리시스 적용 모드 전환
         if self.use_global_path and obstacles_nearby:
             self.use_global_path = False
@@ -556,7 +563,13 @@ class LatticePlanner:
             # rospy.loginfo("모드 전환: 글로벌 패스 -> 래티스 패스 (장애물 감지, 거리: {:.1f}m)".format(min_distance))
 
         elif not self.use_global_path and not obstacles_nearby:
-            if not self.is_in_recovery_mode:
+            # [2026_AISW] 경로 중심 근처로 돌아온 뒤에만 전역경로로 전환 — 횡편차 2.8 m 에서 바로 전환해
+            # 조향 -24° 급복귀 후 반대편 0.7 m 오버슈트(2026-10-09 인덱스 667). 그 전까지 래티스가 부드럽게 복귀.
+            _, ego_d = self._path_sd(self.gps_x, self.gps_y) if current_pos is not None else (0.0, 0.0)
+            # 장애물이 RETURN_TIMEOUT_S 넘게 안 보이면 횡편차와 무관하게 복귀 (옆 차로 장기 체류 = 차로 준수 위반 방지)
+            self._clear_since = getattr(self, '_clear_since', None) or current_time
+            timed_out = current_time - self._clear_since >= RETURN_TIMEOUT_S
+            if not self.is_in_recovery_mode and (abs(ego_d) <= RETURN_D_MAX or timed_out):
                 if min_distance > (self.obstacle_detection_distance + self.mode_switch_hysteresis):
                     self.use_global_path = True
                     # rospy.loginfo("모드 전환: 래티스 패스 -> 글로벌 패스 (장애물 없음, 거리: {:.1f}m)".format(min_distance))
@@ -1098,6 +1111,22 @@ class LatticePlanner:
             wrap = need - len(xs)
             xs += XY[:wrap, 0].tolist()
             ys += XY[:wrap, 1].tolist()
+        # [2026_AISW] 부드러운 복귀: 자차가 경로에서 떨어져 있으면(회피 직후 등) 현재 횡편차에서 0 까지
+        # 코사인으로 줄어드는 경로를 낸다. 전역경로를 그대로 내면 2.8 m 횡편차를 PP 가 한 번에 잡으려다
+        # 조향 -26° 후 반대편 0.7 m 오버슈트(2026-10-09 인덱스 668).
+        if hasattr(self, 'gps_x') and len(xs) >= 3:
+            _, d0 = self._path_sd(self.gps_x, self.gps_y)
+            if abs(d0) > BLEND_D_MIN:     # 평소 추종 오차(<0.5 m)에는 적용 안 함 — 교정력 약화 방지
+                L = max(BLEND_MIN_M, BLEND_PER_MPS * max(self.ego_vel, 0.0))
+                ax, ay = np.asarray(xs), np.asarray(ys)
+                seg = np.hypot(np.diff(ax), np.diff(ay))
+                sc = np.concatenate([[0.0], np.cumsum(seg)])
+                tx, ty = np.gradient(ax), np.gradient(ay)
+                nrm = np.hypot(tx, ty); nrm[nrm < 1e-9] = 1.0
+                w = np.where(sc < L, 0.5 * (1.0 + np.cos(np.pi * sc / L)), 0.0)
+                off = d0 * w
+                xs = (ax - off * ty / nrm).tolist()
+                ys = (ay + off * tx / nrm).tolist()
         return xs, ys
 
     # (s, d) 최종경로를 (x, y)로 변환
