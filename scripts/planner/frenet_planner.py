@@ -104,7 +104,7 @@ class FrenetPlanner:
         self.last = {}
 
     def plan(self, ego_x, ego_y, ego_yaw, ego_v, objects, edges=(float('nan'), float('nan'))):
-        """objects: [(x, y, vx, vy, half_len, half_wid), ...] 월드.
+        """objects: [(x, y, vx, vy, half_len, half_wid[, confirmed]), ...] 월드. confirmed 없으면 확정으로 본다.
         edges: 자차 기준 도로 경계 (좌+, 우-), 모르면 nan.
         → dict(x, y [월드 경로], dT, speed_cap [m/s, inf=제한 없음], mode)"""
         p = self.p
@@ -125,14 +125,16 @@ class FrenetPlanner:
 
         # 객체를 (s, d) 로 투영 + 등속 예측용 속도 성분
         objs = []
-        for (ox, oy, vx, vy, hl, hw) in objects:
+        for ob in objects:
+            ox, oy, vx, vy, hl, hw = ob[:6]
+            conf = bool(ob[6]) if len(ob) > 6 else True
             os_, od, oyaw = self._proj_free(ox, oy)
             if not (-5.0 < os_ - s0 < p.horizon + 10.0):
                 continue
             c, sn = math.cos(oyaw), math.sin(oyaw)
             vs, vd = c * vx + sn * vy, -sn * vx + c * vy
             moving = math.hypot(vx, vy) > p.obj_speed_static
-            objs.append((os_ - s0, od, vs if moving else 0.0, vd if moving else 0.0, hl, hw, moving))
+            objs.append((os_ - s0, od, vs if moving else 0.0, vd if moving else 0.0, hl, hw, moving, conf))
 
         v_ref = max(ego_v, 2.0)
         # 길가 물체(가로등·표지판·경계석)가 경로를 밀어내지 않게: 차로 안(|d|<=gate) 정지 물체만 경로 모양에 반영
@@ -155,7 +157,8 @@ class FrenetPlanner:
         self.prev_dT = dT
         # 속도 상한: (1) 선택 경로가 정지 물체에 막혔으면 그 앞 정지, (2) 이동 객체는 시간 창 충돌로 양보/추종.
         # 이동 객체는 피해 가지 않는다 (반대 차로 추월 = 차로 준수 위반).
-        _, s_hit = self._eval(ss, d, statics, v_ref)
+        # 정지 판단은 확정 트랙(연속 3회 이상 관측)만 — 한두 번 잡혔다 사라지는 유령 감지로 순간 정지하던 것 방지
+        _, s_hit = self._eval(ss, d, [o for o in statics if o[7]], v_ref)
         x, y = self.ref.to_xy(s0 + ss, d)
         cap = float('inf')
         if s_hit is not None:
@@ -175,7 +178,8 @@ class FrenetPlanner:
         p = self.p
         best, why = float('inf'), None
         taus = np.arange(0.0, T + 1e-6, dt)
-        for (rs, rd, vs, vd, hl, hw, _) in movers:
+        for o in movers:
+            rs, rd, vs, vd, hl, hw = o[:6]
             ps = rs + vs * taus; pd = rd + vd * taus
             ok = (ps > 0.0) & (ps < ss[-1])
             if not ok.any():
@@ -188,6 +192,8 @@ class FrenetPlanner:
             t_in, t_out = taus[k[0]], taus[k[-1]] + dt
             s_c = float(ps[k].min())                         # 내 경로 위 가장 가까운 충돌 지점
             gap = s_c - hl - FRONT
+            if s_c < FRONT + 0.5:
+                continue   # 충돌 지점이 앞범퍼보다 뒤 = 이미 옆/뒤 → 서도 소용없음 (hit=0.0 순간 정지 원인)
             vo = max(0.0, vs)                                # 경로 방향 속도 (앞차 추종용)
             if inside[0] and vo > p.obj_speed_static:        # 이미 내 통로 안에서 같은 방향 → 추종
                 c = math.sqrt(max(0.0, vo * vo + 2.0 * p.decel * (gap - p.stop_gap)))
@@ -218,7 +224,8 @@ class FrenetPlanner:
         p = self.p
         cost, s_hit = 0.0, None
         t = ss / v
-        for (rs, rd, vs, vd, hl, hw, moving) in objs:
+        for o in objs:
+            rs, rd, vs, vd, hl, hw, moving = o[:7]
             # 객체의 시간별 예측 위치 (정지 객체는 고정)
             ps = rs + vs * t; pd = rd + vd * t
             ds_ = ps - ss                              # 경로점(후륜축)과 객체의 종방향 차

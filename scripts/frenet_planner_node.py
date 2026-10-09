@@ -61,10 +61,11 @@ class Node:
         for d in msg.detections:
             lx, ly = d.bbox.center.position.x, d.bbox.center.position.y
             vx = vy = 0.0
+            conf = 1.0
             if len(d.source_cloud.data) == 16:
-                _, vx, vy, _ = struct.unpack('ffff', d.source_cloud.data)
+                _, vx, vy, conf = struct.unpack('ffff', d.source_cloud.data)
             out.append((x + c * lx - s * ly, y + s * lx + c * ly, vx, vy,
-                        d.bbox.size.x / 2.0, d.bbox.size.y / 2.0))
+                        d.bbox.size.x / 2.0, d.bbox.size.y / 2.0, conf > 0.5))
         # 장애물 기억: LiDAR 3 Hz 깜빡임/근접 시 소실로 정지 상한이 풀려 장애물로 굴러가던 것 방지(2026-10-09).
         # 이번 감지와 1.5 m 이내 겹치는 기억은 새 값으로 대체, 나머지는 HOLD_S 동안 유지(월드 좌표라 정지 물체에 정확).
         now = rospy.get_time()

@@ -1,0 +1,67 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/MarkerArray
+      Name: 미션/전역경로
+      Enabled: true
+      Marker Topic: /aisw/mission_markers
+      Queue Size: 1
+    - Class: rviz/Path
+      Name: 로컬경로
+      Enabled: true
+      Topic: /local_path
+      Color: 0; 255; 0
+      Line Style: Billboards
+      Line Width: 0.3
+      Alpha: 1
+    - Class: rviz/MarkerArray
+      Name: 래티스 후보
+      Enabled: true
+      Marker Topic: /lattice_markers
+      Queue Size: 1
+    - Class: rviz/MarkerArray
+      Name: 자차/상태
+      Enabled: true
+      Marker Topic: /aisw/viz/ego
+      Queue Size: 1
+    - Class: rviz/MarkerArray
+      Name: 감지/추적 객체
+      Enabled: true
+      Marker Topic: /aisw/viz/objects
+      Queue Size: 1
+    - Class: rviz/LaserScan
+      Name: LiDAR 스캔
+      Enabled: true
+      Topic: /aisw/lidar_scan
+      Size (m): 0.3
+      Style: Flat Squares
+      Color Transformer: FlatColor
+      Color: 255; 0; 255
+    - Class: rviz/Pose
+      Name: 자차 위치
+      Enabled: true
+      Topic: /aisw/ego_pose
+      Color: 255; 255; 0
+      Shape: Arrow
+    - Class: rviz/TF
+      Name: TF
+      Enabled: false
+  Enabled: true
+  Global Options:
+    Fixed Frame: map
+    Background Color: 30; 30; 30
+  Name: root
+  Tools:
+    - Class: rviz/MoveCamera
+  Views:
+    Current:
+      Class: rviz/ThirdPersonFollower
+      Name: Current View
+      Target Frame: base_link
+      Distance: 45
+      Pitch: 0.9
+      Yaw: 3.14
+      Focal Point: {X: 8, Y: 0, Z: 0}
