@@ -183,10 +183,31 @@ NPC 가 있을 때 멈췄다 진입하는 주행이 로그에 충분히 있어�
 
 ---
 
+## 경로계획기 선택: Frenet 샘플링 플래너 (`planner:=frenet`, 실험 중)
+
+`roslaunch aisw_2026 aisw_midterm.launch sim_ip:=127.0.0.1 planner:=frenet` — 래티스와 같은 토픽을 내므로 컨트롤러는 그대로.
+
+1. 자차를 전역경로 기준 (s, d) 로 변환 (순환 코스 랩 처리 포함)
+2. 현재 횡편차·방향오차 → 목표 횡위치(0.25 m 간격, 도로 경계/좌 3.5 m 이내) 5차 다항식 후보 × 전이거리 2종
+3. 비용 = 차로 안 **정지 물체**와의 충돌·근접 + 중심 이탈 + 직전 선택과 차이 + 곡률 → 경로 모양 결정
+4. 속도 상한 `/aisw/speed_cap`: 막힌 정지 물체 앞 정지 / 같은 방향 앞차는 √(v앞차²+2a·간격) 추종 /
+   가로지르는 NPC 는 6 s 예측 점유 시간창과 내 통과 시간창이 겹치면 양보 → 이동 객체는 피하지 않고 속도로 대응
+5. 오프라인 검증(`frenet_sim`): 정적 회피 여유 1.1 m, 앞차 추종 여유 1.5 m, 횡단 NPC 양보 여유 1.5 m
+
+객체 추적: `aisw_lidar_obstacles` 가 클러스터를 월드 좌표 등속 칼만 필터로 추적 → `/tracked_objects_3d` 의
+`source_cloud.data = float32[상대속도, vx, vy, 확정]`, 확정 트랙은 `/aisw/tracks`.
+도로 경계: `/aisw/road_edges` [좌+, 우-] → `tools/edge_logger.py` 기록 → `tools/build_edge_map.py` 지도화.
+
+## 실주행 연습 기록 (2026-10-09, 로컬 MORAI)
+- 센서 실주기: GPS ~8 Hz, LiDAR ~3 Hz (설정 30/10 Hz, 시뮬 부하) → 저주기 대응 코드 반영
+- Status 보고 속도가 실제의 1.3~1.7배 → 추측항법이 GPS 구간에서 비율을 학습해 보정 (음영 오차 31 m → 3~4.5 m)
+- 래티스 기준 5바퀴 연속 완주, 충돌 0, 바퀴 7.2~8.2분, 회전교차로는 AI 정책 주행
+
 ## 도구 (`tools/`)
 | 파일 | 용도 |
 |---|---|
 | `plot_missions.py` | 미션 위치 + 시나리오 객체 그림 |
+| `edge_logger.py` / `build_edge_map.py` | LiDAR 도로 경계 기록 / 인덱스별 경계 지도 |
 | `link_index_table.py` | 로그 → link_id ↔ 인덱스 표 |
 | `train_policy.py` | AI 구간 정책 학습 |
 | `find_index.py` | 좌표 → 전역경로 인덱스 |

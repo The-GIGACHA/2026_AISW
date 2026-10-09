@@ -126,6 +126,9 @@ class MasterController:
         self.nearest_vrel = float('nan')   
 
         rospy.Subscriber('/merge_stop_flag', UInt8, self.stop_vrel)
+        # [2026_AISW] Frenet 플래너의 경로상 충돌 앞 정지 속도 상한 [m/s]
+        rospy.Subscriber('/aisw/speed_cap', Float32, self._planner_cap_cb)
+        self._planner_cap = None; self._planner_cap_t = 0.0
         self.stop_vrel_flag = None
 
         rospy.loginfo("MasterController 초기화 완료")
@@ -134,6 +137,9 @@ class MasterController:
         """마스터에서 독립적으로 ref_path 로드"""
         json_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'map', 'kcity_map.json')
         return PATH(*load_map_fields(json_file))
+
+    def _planner_cap_cb(self, msg):
+        self._planner_cap = float(msg.data); self._planner_cap_t = rospy.get_time()
 
     def _vrel_cb(self, msg: Float32):
         self.nearest_vrel = msg.data
@@ -544,6 +550,8 @@ class MasterController:
 
                 # 2. 차선 하나일 경우, 카팔로잉
                 cap = self._compute_speed_cap_from_vrel()
+                if self._planner_cap is not None and rospy.get_time() - self._planner_cap_t < 0.5:
+                    cap = self._planner_cap if cap is None else min(cap, self._planner_cap)
 
                 self.controller.external_speed_cap = cap
 

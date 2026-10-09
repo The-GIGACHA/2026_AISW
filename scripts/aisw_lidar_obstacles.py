@@ -17,6 +17,22 @@ import numpy as np
 import rospy
 from vision_msgs.msg import Detection3DArray, Detection3D, ObjectHypothesisWithPose
 from sensor_msgs.msg import PointCloud2, LaserScan
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Float32MultiArray
+from perception.tracker import Tracker
+
+# [2026_AISW] 객체 추적 + 도로 경계 기록에 쓰는 공유 상태 (자차 자세는 master 의 /aisw/ego_pose)
+CTX = {'pose': None, 'pose_t': 0.0, 'ego_v': 0.0, 'prev': None, 'tracker': Tracker()}
+
+def _pose_cb(m):
+    now=rospy.get_time()
+    x,y=m.pose.position.x,m.pose.position.y
+    yaw=2.0*math.atan2(m.pose.orientation.z,m.pose.orientation.w)
+    pv=CTX['prev']
+    if pv is not None and now-pv[2]>0.05:
+        v=math.hypot(x-pv[0],y-pv[1])/(now-pv[2])
+        if v<40.0: CTX['ego_v']=0.7*CTX['ego_v']+0.3*v
+    CTX['prev']=(x,y,now); CTX['pose']=(x,y,yaw); CTX['pose_t']=now
 
 VERT = np.deg2rad(np.array([-15,1,-13,3,-11,5,-9,7,-7,9,-5,11,-3,13,-1,15], dtype=np.float32))
 
@@ -31,6 +47,9 @@ def main():
     # [2026_AISW] AI 구간(ai_zone_controller) 입력용 2D 거리 스캔: 장애물 높이대 점의 방위별 최소거리
     scan_pub=rospy.Publisher('/aisw/lidar_scan', LaserScan, queue_size=1)
     NBIN=int(gp('scan_bins',72))
+    CTX['tracks_pub']=rospy.Publisher('/aisw/tracks', Detection3DArray, queue_size=1)
+    CTX['edges_pub']=rospy.Publisher('/aisw/road_edges', Float32MultiArray, queue_size=1)
+    rospy.Subscriber('/aisw/ego_pose', PoseStamped, _pose_cb, queue_size=1)
     s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.settimeout(1.0)
     s.bind(('0.0.0.0',port))
@@ -56,7 +75,9 @@ def main():
             if m.any(): sweep.append(np.stack([x[m],y[m],z[m]],1))
         if azi[0]<last_azi:  # 방위각 랩 = 한 바퀴 완료
             if sweep:
-                pts=remove_self(remove_ground(np.concatenate(sweep), HMIN, HMAX), LX); sweep=[]
+                edges=[float('nan'), float('nan')]
+                pts=remove_self(remove_ground(remove_self(np.concatenate(sweep), LX), HMIN, HMAX, edges_out=edges), LX); sweep=[]
+                CTX['edges']=edges
                 publish_scan(pts, scan_pub, NBIN, RMAX)
                 process(pts, pub, GRID, MINP, LX)
             else: sweep=[]
@@ -64,7 +85,7 @@ def main():
 
 LIDAR_H = 1.55   # 평지 기준 라이다 높이 [m] (공식 센서 파일 z=1.55)
 
-def remove_ground(pts, hmin, hmax, cell=2.0, rfit=25.0):
+def remove_ground(pts, hmin, hmax, cell=2.0, rfit=25.0, edges_out=None):
     """지면 평면 z=ax+by+c 를 2 m 칸별 최저점에 맞추고(잔차 큰 칸 2회 제거), 지면 위 높이 [hmin,hmax] 점만 남긴다."""
     if len(pts)==0: return pts
     near=pts[np.hypot(pts[:,0],pts[:,1])<rfit]
@@ -87,7 +108,20 @@ def remove_ground(pts, hmin, hmax, cell=2.0, rfit=25.0):
             plane=None                   # 경사 8.5° 초과/높이 이상 → 잘못 맞춘 것으로 보고 평지 가정
     ground=(plane[0]*pts[:,0]+plane[1]*pts[:,1]+plane[2]) if plane is not None else -LIDAR_H
     h=pts[:,2]-ground
+    if edges_out is not None:
+        edges_out[:]=road_edges(pts, h)
     return pts[(h>hmin)&(h<hmax)]
+
+def road_edges(pts, h, xr=(0.5, 11.0), hb=(0.08, 1.2), ymin=1.2, ymax=12.0, q=10):
+    """도로 경계(경계석·가드레일·벽) 횡거리 [좌+, 우-] (라이다 프레임 x 구간). 경계석 0.15~0.25 m 도 잡도록
+    장애물 높이 필터(0.3 m)와 별도로 낮은 높이대를 쓴다. 칸마다 가장 가까운 점들의 하위 q 백분위 → 잡음 완화.
+    차량·보행자도 섞일 수 있어 단일 값이 아니라 여러 회전의 중앙값으로 지도화한다(tools/build_edge_map.py)."""
+    m=(pts[:,0]>xr[0])&(pts[:,0]<xr[1])&(h>hb[0])&(h<hb[1])
+    y=pts[m,1]
+    left=y[(y>ymin)&(y<ymax)]; right=y[(y<-ymin)&(y>-ymax)]
+    l=float(np.percentile(left,q)) if len(left)>=5 else float('nan')
+    r=float(np.percentile(right,100-q)) if len(right)>=5 else float('nan')
+    return [l, r]
 
 # 자차 차체 상자 (후륜축 기준): 뒤 오버행 0.79, 휠베이스+앞 오버행 3.845, 반폭 0.946 + 미러/여유
 SELF_X = (-1.1, 4.1)
@@ -150,8 +184,12 @@ def process(pts, pub, GRID, MINP, LX):
         h=ObjectHypothesisWithPose(); h.id=tid; h.score=1.0; det.results.append(h)
         pc=PointCloud2(); pc.data=struct.pack('f',0.0); det.source_cloud=pc
         msg.detections.append(det); tid+=1
-    msg.detections=drop_boundary_lines(msg.detections)
+    msg.detections, line_ys=drop_boundary_lines(msg.detections)
+    track_and_publish(msg)
     pub.publish(msg)
+    # 도로 경계(경계석/가드레일 선)의 자차 기준 횡거리: [좌(+), 우(-)], 없으면 nan → 경계 지도 작성용
+    left,right=CTX.get('edges',[float('nan'),float('nan')])
+    CTX['edges_pub'].publish(Float32MultiArray(data=[left,right]))
     rospy.loginfo_throttle(2.0,'[lidar_obstacles] 장애물 %d개', len(msg.detections))
 
 def drop_boundary_lines(dets, dy=0.5, min_n=3, min_span=5.0, max_w=0.8):
@@ -166,7 +204,32 @@ def drop_boundary_lines(dets, dy=0.5, min_n=3, min_span=5.0, max_w=0.8):
         xs=[b.bbox.center.position.x for b in line]
         if len(line)>=min_n and max(xs)-min(xs)>=min_span:
             drop.update(id(b) for b in line)
-    return [d for d in dets if id(d) not in drop]
+    line_ys=sorted({round(d.bbox.center.position.y,1) for d in dets if id(d) in drop})
+    return [d for d in dets if id(d) not in drop], line_ys
+
+def track_and_publish(msg):
+    """클러스터를 월드 좌표에서 추적해 id·상대속도를 채우고 /aisw/tracks(월드, 확정 트랙)를 발행.
+    source_cloud.data = float32 [vx_rel(자차 진행방향 상대속도), vx, vy(월드), 확정(1/0)]."""
+    pose=CTX['pose']
+    if pose is None or rospy.get_time()-CTX['pose_t']>0.5:
+        return   # 자세 없으면 추적 생략 (id=클러스터 순번, 속도 0 유지)
+    dets=[(d.bbox.center.position.x,d.bbox.center.position.y,(d.bbox.size.x,d.bbox.size.y,d.bbox.size.z)) for d in msg.detections]
+    tracks=CTX['tracker'].step(rospy.get_time(), pose, dets)
+    c,s=math.cos(pose[2]),math.sin(pose[2])
+    out=Detection3DArray(); out.header.stamp=msg.header.stamp; out.header.frame_id='map'
+    for d,tr in zip(msg.detections,tracks):
+        vx,vy=tr.vel
+        vrel=vx*c+vy*s-CTX['ego_v']
+        d.results[0].id=tr.id
+        d.source_cloud.data=struct.pack('ffff',vrel,vx,vy,1.0 if tr.confirmed else 0.0)
+        if tr.confirmed:
+            w=Detection3D(); w.bbox.center.position.x,w.bbox.center.position.y=tr.pos
+            w.bbox.center.orientation.z=math.sin(math.atan2(vy,vx)/2); w.bbox.center.orientation.w=math.cos(math.atan2(vy,vx)/2)
+            w.bbox.size=d.bbox.size
+            h=ObjectHypothesisWithPose(); h.id=tr.id; h.score=1.0; w.results.append(h)
+            w.source_cloud=PointCloud2(); w.source_cloud.data=d.source_cloud.data
+            out.detections.append(w)
+    CTX['tracks_pub'].publish(out)
 
 if __name__=='__main__':
     main()
