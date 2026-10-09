@@ -135,7 +135,7 @@ class Bridge:
         # '#MoraiCtrlCmd$' + int32 len(23) + aux12 + [mode u8, gear u8, cmdType u8, vel f, accval f, accel f, brake f, steer f] + \r\n
         data = struct.pack('<BBB5f', self.cmode, self.gear,
                            m.longlCmdType if m.longlCmdType else 1,
-                           m.velocity, m.acceleration, m.accel, m.brake, m.steering * self.steer_scale)  # 반전 제거: 실측(25.S4.MolitComp03) 패킷 steering +0.3 → yaw +59° 좌회전, ROS 규약(+좌)과 동일
+                           m.velocity, m.acceleration, m.accel, m.brake, m.steering * self.steer_scale)  # steering +좌 (ROS 규약과 같음)
         pkt = b'#MoraiCtrlCmd$' + struct.pack('<i', len(data)) + b'\x00'*12 + data + b'\r\n'
         try: self.tx.sendto(pkt, self.ctrl_to)
         except OSError: pass
@@ -159,8 +159,8 @@ class Bridge:
                     msg.longitude = nmea_deg(f[4], f[5])
                     msg.altitude  = float(f[9]) if f[9] else 0.0
                 except ValueError: continue
-                # GPS 음영(제밍)구역: MORAI가 '0000.0000,N,00000.0000,E'(RMC는 A=유효)를 계속 송신
-                # → (0,0)을 발행하면 자차가 수천km 밖으로 튀어 풀가속/최대조향 발생했음. 발행 중단 → 제어기 GPS두절 로직(크리프/정지) 동작
+                # GPS 음영 구역: MORAI 가 '0000.0000,N,00000.0000,E' 를 계속 보낸다 → 발행하지 않는다
+                # ((0,0) 을 내면 위치가 수천 km 튄다. 두절은 master 의 추측항법이 맡는다)
                 if msg.latitude == 0.0 or msg.longitude == 0.0:
                     rospy.logwarn_throttle(2.0, '[udp_bridge] GPS 좌표 0 (음영구역) — /gps 발행 중단')
                     continue
@@ -173,8 +173,7 @@ class Bridge:
                     t = msg.header.stamp.to_sec()
                     ego = EgoVehicleStatus(); ego.header.stamp = msg.header.stamp
                     ego.position.x, ego.position.y, ego.position.z = ex, ny, msg.altitude
-                    # 속도 = 0.5초 창 변위/시간. NMEA 해상도(~0.2m)+동일 fix 반복(약 25%) 때문에
-                    # 인접 fix 미분은 0~19m/s로 튐 → PID D항 채터링(accel/brake 반복) 원인이었음
+                    # 속도 = 0.5초 창 변위/시간 (NMEA 해상도 ~0.2 m·같은 fix 반복 때문에 인접 fix 미분은 크게 튄다)
                     hist = self._fix_hist
                     hist.append((t, ex, ny))
                     while len(hist) > 2 and t - hist[1][0] >= 0.5:
@@ -259,7 +258,7 @@ class Bridge:
             m.format = 'jpeg'; m.data = frame[2]
             pub.publish(m)
 
-    # ---------- 미해석 채널 덤프(포맷 확인용) ----------
+    # ---------- CollisionData ----------
     def loop_collision(self, port):
         # '#CollisionData$'(15) + int32 len + aux12 + data: sec,nsec(i4,i4) + 객체 type(u16, 0xffff=충돌 없음) ...
         s = udp_sock(port)

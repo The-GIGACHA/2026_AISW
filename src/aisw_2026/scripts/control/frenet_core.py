@@ -32,11 +32,11 @@ class FrenetParams:
     w_center = 4.0                 # 중심 이탈 (d_T^2)
     obj_d_gate = 2.0               # 정지 물체 중 경로 중심에서 이 거리 안(차로 안)만 경로 모양에 반영 [m]
     prox_lat = 1.0                 # 근접 비용을 매기는 차체-물체 횡여유 상한 [m]
-    w_change = 0.8                 # 직전 선택과의 차이 (떨림 방지). w_center 보다 크면 0.25 m 에 갇혀 중심 복귀 못 함
+    w_change = 0.8                 # 직전 선택과의 차이 (떨림 방지, w_center 보다 작게)
     w_curv = 200.0                 # 최대 곡률^2
     stop_gap = 4.0                 # 정지 시 앞범퍼-객체 간격 [m]
     decel = 2.5                    # 속도 상한 계산용 감속도 [m/s^2]
-    obj_speed_static = 1.2         # 이보다 느린 객체는 정지로 본다 [m/s]. 0.7 은 추적 잡음으로 길가 물체를 이동 객체로 오판(도심 감속)
+    obj_speed_static = 1.2         # 이보다 느린 객체는 정지로 본다 [m/s]
 
 
 class RefPath:
@@ -148,7 +148,7 @@ class FrenetPlanner:
         self.prev_dT = dT
         # 속도 상한: (1) 선택 경로가 정지 물체에 막혔으면 그 앞 정지, (2) 이동 객체는 시간 창 충돌로 양보/추종.
         # 이동 객체는 피해 가지 않는다 (반대 차로 추월 = 차로 준수 위반).
-        # 정지 판단은 확정 트랙(연속 3회 이상 관측)만 — 한두 번 잡혔다 사라지는 유령 감지로 순간 정지하지 않게
+        # 정지 판단은 확정(confirmed) 물체만 — 한두 번 잡혔다 사라지는 감지로 순간 정지하지 않게
         _, s_hit = self._eval(ss, d, [o for o in statics if o[7]], v_ref)
         x, y = self.ref.to_xy(s0 + ss, d)
         cap = float('inf')
@@ -184,7 +184,7 @@ class FrenetPlanner:
             s_c = float(ps[k].min())                         # 내 경로 위 가장 가까운 충돌 지점
             gap = s_c - hl - FRONT
             if s_c < FRONT + 0.5:
-                continue   # 충돌 지점이 앞범퍼보다 뒤 = 이미 옆/뒤 → 서도 소용없음 (hit=0.0 순간 정지 원인)
+                continue   # 충돌 지점이 앞범퍼보다 뒤 = 이미 옆/뒤 → 서도 소용없음
             vo = max(0.0, vs)                                # 경로 방향 속도 (앞차 추종용)
             if inside[0] and vo > p.obj_speed_static:        # 이미 내 통로 안에서 같은 방향 → 추종
                 c = math.sqrt(max(0.0, vo * vo + 2.0 * p.decel * (gap - p.stop_gap)))

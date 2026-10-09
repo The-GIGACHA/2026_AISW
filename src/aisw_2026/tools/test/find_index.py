@@ -4,8 +4,8 @@
 
 ROS 없이 동작한다.
 
-    python3 tools/find_index.py 312.5 -104.2          # 지역좌표 한 점 → 인덱스, 누적거리 s
-    python3 tools/find_index.py --idx 1650             # 인덱스 → 좌표
+    python3 tools/test/find_index.py 312.5 -104.2          # 지역좌표 한 점 → 인덱스, 누적거리 s
+    python3 tools/test/find_index.py --idx 1650             # 인덱스 → 좌표
     python3 tools/find_index.py --csv <로그폴더>/run_xxx.csv --event n_collision
         # data_recorder 로그에서 해당 열 값이 0 → 양수로 바뀐 지점의 인덱스 목록
     python3 tools/find_index.py --csv <로그폴더>/run_xxx.csv --event jamming

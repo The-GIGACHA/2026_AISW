@@ -134,7 +134,7 @@ class ZoneController:
             if v_rb is not None:
                 v_cmd, source = v_rb, 'entry_' + self.entry.state
 
-        # 안전 감독: 통로 장애물 → 제동거리 기반 상한 (정책 출력보다 우선)
+        # 안전 감독: 통로 장애물 → 제동거리 기반 상한 (진입 판단보다 우선)
         # 회피 중에는 목표 통로 기준(옮겨가는 도중 원래 장애물에 걸려 급제동하지 않게),
         # 단 지금 위치 통로 바로 앞(STOP_MARGIN+1 m)에 걸리면 그쪽을 따른다.
         d_obs = self._corridor_obstacle(idx, x, y, yaw, obs, self.offset_goal)
