@@ -64,6 +64,9 @@ class Parameter:
     curve_filter = 8                # 이동평균필터 반영 개수
     mu = 0.55                       # 마찰계수
 
+STEER_RATE_DEG = 5.0   # 룰 구간 조향 변화율 제한 [deg/사이클, 15 Hz]
+
+
 class PATH:
     def __init__(self, cx, cy, cyaw, ck, cv, cmission, cgear):
         self.cx = cx
@@ -242,10 +245,11 @@ class PurePursuit_Control:
                 pass
 
             steering_deg = self.normalize_180(math.degrees(steering_rad))
-            # [2026_AISW] 조향 EMA(α=0.45) + 변화율 제한(사이클당 8도@15Hz≈120도/s) — 위빙 억제하되 복귀조향 허용
+            # [2026_AISW] 조향 EMA(α=0.45) + 변화율 제한(사이클당 5도@15Hz≈75도/s) — 위빙 억제하되 복귀조향 허용
+            # (8도/사이클에서는 경로 모드 전환 때 -35° 급조향이 그대로 나갔다, 2026-10-09)
             prev = getattr(self, '_steer_filt', 0.0)
             filt = 0.45 * steering_deg + 0.55 * prev
-            filt = prev + np.clip(filt - prev, -8.0, 8.0)
+            filt = prev + np.clip(filt - prev, -STEER_RATE_DEG, STEER_RATE_DEG)
             self._steer_filt = filt
             return np.clip(abs(self.target_vel), 0.2, Parameter.max_velocity), np.clip(filt, -40.0, 40.0)
     
@@ -381,6 +385,9 @@ class Morai_Control_Node:
         # 맵 인덱스 clamp & 현재 ref_path 설정
         self.map_index = max(0, min(self.initial_map_index, len(self.all_paths)-1))
         self.ref_path  = self.all_paths[self.map_index]
+        # [2026_AISW] 구간 속도표 (config speed_profile) 로 맵 velocity(전부 20 kph) 대체
+        self._apply_speed_profile(get_section(ros_sections(), 'speed_profile', None))
+
         # [2026_AISW] 전역경로 인덱스는 직전 인덱스 주변 창에서만 탐색 (루프 끝에서 0 으로 되감기 방지)
         self.global_indexer = NearestIndexer(self.ref_path.cx, self.ref_path.cy)
 
@@ -492,6 +499,7 @@ class Morai_Control_Node:
         utm_x, utm_y = self.proj_UTM(longitude, latitude)
         self.ego_x = utm_x - msg.eastOffset
         self.ego_y = utm_y - msg.northOffset
+        self._gps_x, self._gps_y = self.ego_x, self.ego_y   # [2026_AISW] 원시 GPS (예측 기준점)
         self.gps_fix = msg.status           # 0 : no fix / 1 : 2D fix / 2 : 3D fix / 3 : RTK fix / 4 : RTK Float
 
         self.gps_flag = True
@@ -715,6 +723,20 @@ class Morai_Control_Node:
         except rospy.ServiceException as e:
             print(f"Ctrl mode change failed: {e}")
 
+    def _apply_speed_profile(self, prof):
+        if not prof:
+            rospy.loginfo('[controller] speed_profile 없음 — 맵 velocity 사용')
+            return
+        n = self.ref_path.length
+        cv = [float(prof.get('default_kph', 20.0))] * n
+        for a, b, kph in prof.get('zones', []):
+            for i in range(max(0, int(a)), min(n, int(b) + 1)):
+                cv[i] = float(kph)
+        cap = Parameter.max_velocity * 3.6
+        self.ref_path.cv = [min(v, cap) / 3.6 for v in cv]
+        rospy.loginfo('[controller] speed_profile 적용: 기본 %.0f kph, 구간 %d개, 상한 %.0f kph',
+                      prof.get('default_kph', 20.0), len(prof.get('zones', [])), cap)
+
     # json파일 불러와 ref 정보 PATH객체로 저장
     def load_ref_map(self, json_file):
         self.ref_path = PATH(*load_map_fields(json_file))
@@ -816,9 +838,11 @@ class Morai_Control_Node:
                         rate.sleep()
                         continue
 
-                # [2026_AISW] GPS 음영/두절 대응: 0.7~3초 두절=직진 크리프, 3초 초과=정지
+                # [2026_AISW] GPS 음영/두절 대응: 1.5~3초 두절=직진 크리프, 3초 초과=정지
+                # (MORAI 부하 시 /gps 가 6~8 Hz 로 떨어져 0.5~0.7초 간격이 실제로 나옴 → 0.7 은 오탐)
+                # 정상 경로는 master 가 1.2초에 추측항법 AI 모드로 먼저 가져간다.
                 _gps_age = rospy.get_time() - getattr(self, '_last_gps_t', 0.0)
-                if getattr(self, '_last_gps_t', 0.0) > 0.0 and _gps_age > 0.7:
+                if getattr(self, '_last_gps_t', 0.0) > 0.0 and _gps_age > 1.5:
                     self.ctrl_cmd_msg.steering = 0.0
                     if _gps_age > 3.0:
                         self.ctrl_cmd_msg.accel = 0.0; self.ctrl_cmd_msg.brake = 0.6
@@ -878,6 +902,14 @@ class Morai_Control_Node:
                 # ref_path  rviz 시각화
                 # self.publish_map_marker(self.ref_path)
 
+                # [2026_AISW] GPS 샘플 사이 위치 예측: 마지막 GPS + 속도 x 경과시간 (최대 0.5초).
+                # GPS 가 6~8 Hz 일 때 위치가 0.4~0.8 m 계단식으로 튀어 조향이 떨리던 것 완화.
+                if hasattr(self, '_gps_x'):
+                    _dt = min(max(rospy.get_time() - self._last_gps_t, 0.0), 0.5)
+                    _yaw = math.radians(self.ego_yaw)
+                    _v = self.ego_vel * getattr(self, 'speed_scale', 1.0)   # master 가 GPS 로 추정한 속도 보정
+                    self.ego_x = self._gps_x + _v * _dt * math.cos(_yaw)
+                    self.ego_y = self._gps_y + _v * _dt * math.sin(_yaw)
                 self.ego_index_global = self.global_indexer.find(self.ego_x, self.ego_y)
                 self.ego_index_local = self.nearest_index(self.local_path, self.ego_x, self.ego_y)
                 self.curvedvelocity = self.curvebased_vel.run(self.ego_index_global, self.ego_index_local)

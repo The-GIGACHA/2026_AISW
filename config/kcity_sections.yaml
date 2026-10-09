@@ -34,8 +34,8 @@ missions:
      note: "고주로 합류. NPC spawn 6/8/10 이 남행 차로(x≈65~74)로 진입 — 좌측 감시"}
   - {name: speed_exempt,  type: speed_limit, start: 2140, end: 3600, source: estimate,
      note: "규정: A2256W000411 시작점 ~ A2256W000153 끝점은 60 kph 예외. 링크 좌표 미확보"}
-  - {name: gps_shaded,    type: gps_shaded, start: 3780, end: 3974, source: scenario,
-     note: "음영 박스 @(-23.7,-519.2) 118x7.4 m, yaw -58.8° → 경로 3780~3974. 랜덤 장애물 미션 가능 → AI 구간"}
+  - {name: gps_shaded,    type: gps_shaded, start: 3780, end: 4005, source: scenario,
+     note: "음영 박스 @(-23.7,-519.2) 118x7.4 m. 실주행(2026-10-09) GPS 0 구간 ≈ 3785~4000. 랜덤 장애물 미션 가능 → AI 구간"}
   - {name: finish,        type: checkpoint, start: 4391, end: 4391, source: rule,
      note: "완주 (경로 끝 = 시작점, 제한 15분)"}
 
@@ -43,11 +43,11 @@ missions:
 # mode: shaded(GPS 없이 추측항법+LiDAR) / roundabout(GPS+LiDAR, NPC 양보 판단)
 # enter: 진입 판정 인덱스(음영 시작 전에 미리 진입해 추측항법 기준점을 잡는다)
 ai_zones:
-  - {name: gps_shaded, mode: shaded,     enter: 3760, start: 3780, end: 3990}
+  - {name: gps_shaded, mode: shaded,     enter: 3760, start: 3780, end: 4020}
   - {name: roundabout, mode: roundabout, enter: 1755, start: 1765, end: 1865}
 
 # GPS 음영(재밍) 구간 — 구 버전 호환용. ai_zones 의 shaded 구간과 같게 둔다.
-jamming_zones: [[3760, 3990]]
+jamming_zones: [[3760, 4020]]
 
 # 신호등 판단 구간 — 이 구간 안에서만 정지선/신호 판단을 한다.
 # 신호등 16개(시나리오 tlList)가 있으나 위치·정지선 좌표가 시나리오에 없다.
@@ -76,3 +76,15 @@ lattice:
   # 회전교차로는 AI 구간이 맡으므로 여기 넣지 않는다.
   merge_zones:
     - [2140, 2260, 1]
+
+# ── 룰 구간 속도표 [kph] (보고 속도 기준 = 판정 기준) — controller 가 맵 velocity(전부 20) 대신 사용 ──
+# 곡선은 controller 의 곡률 기반 감속(√(R·g·μ))이 추가로 낮춘다. AI 구간은 ai_zone_controller 속도 사용.
+# 규정 60 kph 초과 즉시 15초 패널티 → 최대 40 (controller Parameter.max_velocity 도 40).
+speed_profile:
+  default_kph: 30
+  zones:
+    - [600, 720, 20]     # 정적 장애물 회피
+    - [880, 960, 15]     # 보행자
+    - [1090, 1300, 25]   # 도심 우·좌회전
+    - [2140, 2260, 25]   # 고주로 합류
+    - [2260, 3600, 40]   # 고주로

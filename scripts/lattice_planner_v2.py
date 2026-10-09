@@ -37,6 +37,12 @@ from aisw_common import load_map_fields, ros_sections, get_section
 
 
 # Parameter 객체 (전역변수)
+OBS_HOLD_S = 1.5   # [2026_AISW] 장애물 기억 시간 [s] (obs_callback)
+OBS_S_RANGE = (-2.0, 30.0)   # [2026_AISW] 래티스 모드를 켜는 장애물의 경로 방향 범위 [m] (자차 기준)
+LATERAL_LANES = 1.0          # [2026_AISW] 래티스 횡방향 최대 이동 차로 수
+OBS_D_GATE = 2.0             # [2026_AISW] 래티스 모드를 켜는 장애물 중심의 경로 횡거리 한계 [m] (차 반폭 0.95 + 여유 0.6 + 물체 반폭 ~0.5). 2.8 은 길가 물체로 1200~1600 내내 래티스 유지(2026-10-09)
+
+
 class Parameter:
     PLOT_FLAG = False               # 시각화 여부
 
@@ -82,8 +88,10 @@ class Parameter:
     MODE_SWITCH_HYSTERESIS = 1.0        # 전역경로 모드 진입 히스테리시스 [m]
     
     # 회피 후 복귀 안정화 설정
-    AVOIDANCE_RECOVERY_TIME = 2.3       # 회피 후 래티스 모드 유지 시간 [초]
-    AVOIDANCE_RECOVERY_DISTANCE = 9.0  # 회피 후 래티스 모드 유지 거리 [m]
+    # [2026_AISW] 2.3 s / 9 m → 4 s / 15 m: LiDAR 3 Hz 에서 장애물이 1 s 이상 안 잡히면 회피 도중 전역경로로
+    # 한 주기 돌아갔다 다시 회피(조향 -35° 튐)하던 것 방지 (2026-10-09 실주행 인덱스 630)
+    AVOIDANCE_RECOVERY_TIME = 4.0       # 회피 후 래티스 모드 유지 시간 [초]
+    AVOIDANCE_RECOVERY_DISTANCE = 15.0  # 회피 후 래티스 모드 유지 거리 [m]
     
     # [2026_AISW] 구간 인덱스(허용경로 2차선 / 곡선 단일차선 / 횡단보도 / 끼어들기)는
     # config/kcity_sections.yaml 의 lattice.* 로 옮겼다.
@@ -438,6 +446,20 @@ class LatticePlanner:
             coords_list.append(coords8)
             tuples_list.append((track_id, coords8, vx_rel))
 
+        # [2026_AISW] 장애물 기억: LiDAR 가 부하 시 3 Hz 로 떨어지고 감지가 0↔1 개로 깜빡여
+        # 전역/로컬 모드와 조향이 매 주기 뒤집혔다(2026-10-09 실주행). 월드 좌표로 OBS_HOLD_S 동안 유지하고,
+        # 이번 주기 감지와 중심이 1.5 m 이내면 같은 물체로 보고 새 값으로 대체한다.
+        now = rospy.get_time()
+        mem = [(t, c, tup) for (t, c, tup) in getattr(self, '_obs_mem', []) if now - t <= OBS_HOLD_S]
+        def _ctr(c8):
+            return (sum(c8[0::2]) / 4.0, sum(c8[1::2]) / 4.0)
+        cur_ctrs = [_ctr(c) for c in coords_list]
+        kept = [(t, c, tup) for (t, c, tup) in mem
+                if all(math.hypot(_ctr(c)[0] - a, _ctr(c)[1] - b) > 1.5 for (a, b) in cur_ctrs)]
+        self._obs_mem = kept + [(now, c, tup) for c, tup in zip(coords_list, tuples_list)]
+        coords_list = [c for (_, c, _) in self._obs_mem]
+        tuples_list = [tup for (_, _, tup) in self._obs_mem]
+
         # 테스트용 정적장애물과 병합 (테스트는 속도 None으로)
         if coords_list:
             base_coords = getattr(self, "test_obstacles", [])
@@ -461,17 +483,41 @@ class LatticePlanner:
         
         return self.obs
 
+    def _path_sd(self, x, y):
+        """전역경로 기준 (누적거리 s, 횡거리 d[좌+]). 하이브리드 판정용 간이 Frenet."""
+        if not hasattr(self, '_gp_xy'):
+            gx, gy = load_map_fields(Parameter.INPUT_JSON)[:2]
+            self._gp_xy = np.column_stack([gx, gy]).astype(np.float64)
+            seg = np.hypot(*np.diff(self._gp_xy, axis=0).T)
+            self._gp_s = np.concatenate([[0.0], np.cumsum(seg)])
+            t = np.gradient(self._gp_xy, axis=0)
+            self._gp_yaw = np.arctan2(t[:, 1], t[:, 0])
+        i = int(np.argmin(np.sum((self._gp_xy - (x, y)) ** 2, axis=1)))
+        dx, dy = x - self._gp_xy[i, 0], y - self._gp_xy[i, 1]
+        c, sn = math.cos(self._gp_yaw[i]), math.sin(self._gp_yaw[i])
+        return self._gp_s[i] + c * dx + sn * dy, -sn * dx + c * dy
+
     def check_obstacles_nearby(self):
-        """가장 가까운 장애물 거리와, 임계값 이내 여부를 함께 반환"""
+        """경로 위 장애물까지 거리와, 임계값 이내 여부를 함께 반환.
+
+        [2026_AISW] 자차 기준 반경 30 m 안의 모든 물체(가로등·표지판·경계석)로 래티스 모드가 켜져
+        장애물이 없는데도 옆 차로로 6 m 벗어나던 문제(2026-10-09 실주행) → 전역경로 앞
+        OBS_S_RANGE, 횡 |d| <= OBS_D_GATE 안의 물체만 센다.
+        """
         if not (hasattr(self, 'gps_x') and hasattr(self, 'gps_y') and self.obs):
             return False, float('inf')
 
+        ego_s, _ = self._path_sd(self.gps_x, self.gps_y)
         min_distance = float('inf')
         for obs in self.obs:
             # 사각형 4점의 평균 = 중심
             obs_points = np.array([[obs[i], obs[i+1]] for i in range(0, 8, 2)])
             center_x = np.mean(obs_points[:, 0])
             center_y = np.mean(obs_points[:, 1])
+            os_, od = self._path_sd(center_x, center_y)
+            ds = os_ - ego_s
+            if not (OBS_S_RANGE[0] <= ds <= OBS_S_RANGE[1] and abs(od) <= OBS_D_GATE):
+                continue
             dist = math.hypot(self.gps_x - center_x, self.gps_y - center_y)
             min_distance = min(min_distance, dist)
 
@@ -568,8 +614,25 @@ class LatticePlanner:
             i0, i1 = 0, len(s_arr)
 
         d = XY[i0:i1] - P                           # 차이
-        j = int(np.argmin((d * d).sum(axis=1)))     # dx^2+dy^2 제곱거리 가장 작은 인덱스
-        s = s_arr[i0 + j]                           # 경로상에서 몇 미터 지점인지
+        d2 = (d * d).sum(axis=1)
+        j = int(np.argmin(d2))                      # dx^2+dy^2 제곱거리 가장 작은 인덱스
+        best_i, best_d2 = i0 + j, float(d2[j])
+        if mode == 'ego' and self.last_s is not None:
+            # [2026_AISW] 순환 코스: 끝점=시작점이라 창이 경로 끝에 걸리면 바퀴를 넘어가도 s 가 끝(2184 m)에
+            # 묶여 로컬경로가 잘리고 차가 제자리 선회했다(2026-10-09 실주행) → 경로 끝 창이면 시작부 30 m 도 탐색
+            if i1 >= len(s_arr) - 1:
+                k1 = int(30.0 / self.search_ds) + 1
+                d0 = XY[:k1] - P
+                d0 = (d0 * d0).sum(axis=1)
+                k = int(np.argmin(d0))
+                if d0[k] < best_d2:
+                    best_i, best_d2 = k, float(d0[k])
+            # 창 안 최근접점이 5 m 넘게 멀면(위치 점프/재시작) 전체 재탐색
+            if best_d2 > 25.0:
+                dd = XY - P
+                dd = (dd * dd).sum(axis=1)
+                best_i = int(np.argmin(dd))
+        s = s_arr[best_i]                           # 경로상에서 몇 미터 지점인지
         if mode == 'ego':
             self.last_s = s
         return s
@@ -786,7 +849,9 @@ class LatticePlanner:
 
         # 현재위치로부터의 격자 [m]
         self.ego_s_list = [min(ego_s + i * Parameter.ds_interval, s_max) for i in range(Parameter.ds_sampling_num)]      # s는 현재위치 기준 (단, 끝 지점 도달시 그냥 끝 인덱스 대입 -> 마지막에 대해 반복계산할 뿐 오류나지 X)
-        self.ego_d_list = np.linspace(0.0, Parameter.road_width * 2.0, Parameter.dd_sampling_num)     # d는 도로기준 고정 경로 : 왼쪽 + / 오른쪽 -
+        # [2026_AISW] 좌측 최대 1개 차로(3.2 m), 0.4 m 간격. 옛 상암맵(편도 3차로) 설정 2개 차로(6.4 m)는
+        # K-City 편도 1~2차로에서 중앙선 침범(차로 준수 패널티)을 만든다.
+        self.ego_d_list = np.linspace(0.0, Parameter.road_width * LATERAL_LANES, Parameter.dd_sampling_num)     # d는 도로기준 고정 경로 : 왼쪽 + / 오른쪽 -
 
         # 횡방향 cost
         for i, d in enumerate(self.ego_d_list):

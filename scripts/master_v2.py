@@ -17,6 +17,10 @@ import numpy as np
 import json
 
 
+DR_MAX_DIST = 250.0   # GPS 없이 추측항법으로 갈 수 있는 최대 거리 [m] (음영 박스 ≈120 m)
+GPS_LOST_S = 1.2   # AI 구간 밖에서 GPS 두절로 판단해 추측항법 shaded 모드로 넘기는 시간 [s]
+
+
 class PATH:
     def __init__(self, cx, cy, cyaw, ck, cv, cmission, cgear):
         self.cx = cx
@@ -230,11 +234,13 @@ class MasterController:
         gps_t = getattr(c, '_last_gps_t', 0.0)
         self.gps_age = (now - gps_t) if gps_t > 0.0 else float('inf')
         self.master_ego_yaw = getattr(c, 'ego_yaw', 0.0)
+        # 매 주기 적분(보정용 적분이 끊기지 않게) → 새 GPS 가 오면 위치 덮어쓰기 + 속도 보정 갱신
+        self.dr.predict(getattr(c, 'ego_vel', 0.0), math.radians(self.master_ego_yaw), now)
         if gps_t > 0.0 and gps_t != self._last_fix_t and self.gps_age < 0.25:
-            self.dr.fix(c.ego_x, c.ego_y, now)
+            self.dr.fix(getattr(c, '_gps_x', c.ego_x), getattr(c, '_gps_y', c.ego_y), now)
             self._last_fix_t = gps_t
-        else:
-            self.dr.predict(getattr(c, 'ego_vel', 0.0), math.radians(self.master_ego_yaw), now)
+        c.speed_scale = self.dr.scale   # controller 의 GPS 사이 위치 예측도 같은 보정 사용
+        rospy.loginfo_throttle(10.0, '[Master] 속도 보정 scale=%.3f (샘플 %d)', self.dr.scale, self.dr.scale_samples)
 
         if self.dr.ready:
             self.master_ego_x, self.master_ego_y = self.dr.x, self.dr.y
@@ -260,8 +266,8 @@ class MasterController:
         """AI 구간 진입/탈출 판정. GPS 음영 중에는 추측항법 인덱스로 진행을 따라간다.
 
         - ai_zones 의 [enter, end] 안이면 해당 모드
-        - 어디서든 GPS 가 0.5초 넘게 끊기면 shaded 모드 (예상 밖 두절 대비.
-          controller 의 GPS 두절 크리프/정지(0.7초)보다 먼저 제어권을 가져온다)
+        - 어디서든 GPS 가 GPS_LOST_S(1.2초) 넘게 끊기면 shaded 모드 (예상 밖 두절 대비.
+          controller 의 GPS 두절 크리프/정지(1.5초)보다 먼저 제어권을 가져온다)
         - shaded 구간 끝을 지나도 GPS 가 복구되기 전까지는 shaded 유지
         """
         idx = self.master_ego_index_global
@@ -271,7 +277,9 @@ class MasterController:
                 if int(z['enter']) <= idx <= int(z['end']):
                     zone = z
                     break
-            if self.gps_age > 0.5 and (zone is None or zone.get('mode') != 'shaded'):
+            # shaded 구간 안: 0.5초 / 구간 밖: 1.2초 (부하 시 /gps 6~8 Hz 간격 오탐 방지)
+            lost_thr = 0.5 if (zone is not None and zone.get('mode') == 'shaded') else GPS_LOST_S
+            if self.gps_age > lost_thr and (zone is None or zone.get('mode') != 'shaded'):
                 if self.active_zone and self.active_zone.get('mode') == 'shaded':
                     zone = self.active_zone
                 else:
@@ -301,16 +309,21 @@ class MasterController:
         now = rospy.get_time()
         dt = 1.0 / 15 if self._last_loop_t is None else min(max(now - self._last_loop_t, 0.01), 0.2)
         ego_vel = getattr(self.controller, 'ego_vel', 0.0)
-        scan_fresh = (now - self._scan_t) < 0.5
+        scan_fresh = (now - self._scan_t) < 1.0   # 부하 시 /aisw/lidar_scan 3 Hz 관측
         v, steer, source = self.ai_ctrl.step(
             zone.get('mode', 'shaded'), self.master_ego_index_global,
             self.master_ego_x, self.master_ego_y, math.radians(self.master_ego_yaw),
             ego_vel, self.yaw_rate, self.scan if scan_fresh else None, dt)
+        if zone.get('mode') == 'shaded' and self.gps_age > 0.5 and self.dr.dist_since_fix > DR_MAX_DIST:
+            # 추측항법만으로 너무 멀리 왔다 = 음영 구간 길이(약 120 m)를 크게 넘김 → 위치를 믿을 수 없으니 정지
+            v = 0.0
+            source += '+dr_limit'
+            rospy.logerr_throttle(2.0, '[AI] GPS 없이 %.0f m 추측항법 — 위치 신뢰 불가, 정지', self.dr.dist_since_fix)
         if not scan_fresh:
             # LiDAR 없이는 통로 감시가 불가능 → 서행
             v = min(v, 8.0 / 3.6)
             source += '+no_lidar'
-            rospy.logwarn_throttle(2.0, '[AI] /aisw/lidar_scan 0.5초 이상 끊김 — 8 kph 서행 (lidar_obstacles:=true 확인)')
+            rospy.logwarn_throttle(2.0, '[AI] /aisw/lidar_scan 1초 이상 끊김 — 8 kph 서행 (lidar_obstacles:=true 확인)')
 
         accel_cmd, brake_cmd = self.controller.cmd_converter.run(v, ego_vel, 4)  # 기어 D(4)
         msg = self.controller.ctrl_cmd_msg

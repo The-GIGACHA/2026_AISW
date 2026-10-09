@@ -25,7 +25,7 @@ import os
 import time
 
 import rospy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from morai_msgs.msg import CollisionData, CtrlCmd, EgoVehicleStatus, GPSMessage
 from nav_msgs.msg import Path
 from pyproj import Proj
@@ -46,7 +46,7 @@ COLUMNS = (
      'local_path_len', 'cand_best']
     + ['cand_cost_%d' % i for i in range(N_CANDIDATES)]
     + ['n_obstacles', 'nearest_obs_dist', 'n_collision',
-       'yaw_rate', 'pose_dr', 'link_id', 'drive_mode', 'mission']
+       'yaw_rate', 'pose_dr', 'link_id', 'drive_mode', 'mission', 'truth_x', 'truth_y']
     + ['scan_%d' % i for i in range(SCAN_BINS)]
 )
 
@@ -87,6 +87,7 @@ class DataRecorder:
         rospy.Subscriber('/aisw/drive_mode', String, self._set('drive_mode', str))
         rospy.Subscriber('/aisw/mission', String, self._set('mission', str))
         rospy.Subscriber('/aisw/lidar_scan', LaserScan, self._scan)
+        rospy.Subscriber('/aisw/debug/truth_xyz', PointStamped, self._truth)   # 추측항법 검증용
 
     # ── 콜백: 최신값만 덮어쓴다. 기록 주기는 run() 이 정한다. ──
     def _set(self, key, cast):
@@ -112,6 +113,10 @@ class DataRecorder:
         self.state['x'] = msg.pose.position.x
         self.state['y'] = msg.pose.position.y
         self.state['pose_dr'] = int(msg.pose.position.z > 0.5)
+
+    def _truth(self, msg):
+        self.state['truth_x'] = round(msg.point.x, 3)
+        self.state['truth_y'] = round(msg.point.y, 3)
 
     def _scan(self, msg):
         if len(msg.ranges) == SCAN_BINS:

@@ -30,8 +30,9 @@ import socket, struct, threading, math
 from collections import deque
 import rospy
 from sensor_msgs.msg import Imu, CompressedImage
-from morai_msgs.msg import GPSMessage, CtrlCmd, EgoVehicleStatus
+from morai_msgs.msg import GPSMessage, CtrlCmd, EgoVehicleStatus, CollisionData, ObjectStatus
 from std_msgs.msg import String
+from geometry_msgs.msg import PointStamped
 from pyproj import Proj
 from morai_camera import JpegAssembler
 
@@ -82,6 +83,11 @@ class Bridge:
         # [2026_AISW] 현재 MGeo 링크 ID (Status @114). 규정 속도예외 구간(A2256W000411~000153) 판정·링크↔인덱스 표 작성용
         self.pub_link = rospy.Publisher('/aisw/link_id', String, queue_size=1)
         self._last_link = None
+        self._last_gps_pub = 0.0
+        self._last_ego_xyz = (0.0, 0.0, 0.0)
+        # [2026_AISW] CollisionData (UDP 9092) → /CollisionData. 이전엔 로그만 찍어 충돌 감시가 불가능했다.
+        self.pub_coll = rospy.Publisher('/CollisionData', CollisionData, queue_size=1)
+        self.pub_truth = rospy.Publisher('/aisw/debug/truth_xyz', PointStamped, queue_size=1)
         self.tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         rospy.Subscriber('/ctrl_cmd', CtrlCmd, self.cb_ctrl, queue_size=1)
 
@@ -89,8 +95,7 @@ class Bridge:
         self.spawn(self.loop_gps, int(gp('gps_port', 9281)))
         self.spawn(self.loop_imu, int(gp('imu_port', 9283)))
         self.spawn(self.loop_status, int(gp('status_port', 909)))
-        if self.dump:
-            self.spawn(self.loop_dump, 9092, 'CollisionData')
+        self.spawn(self.loop_collision, int(gp('collision_port', 9092)))
         if self.use_cam:
             for port, topic in ((9291, '/image_jpeg/compressed'),
                                 (9293, '/image_jpeg_left/compressed'),
@@ -179,6 +184,8 @@ class Bridge:
                     st = self._status_vel
                     ego.velocity.x = st[1] if st is not None and t - st[0] < 0.5 else self._v_ema
                     self.pub_comp.publish(ego)
+                    self._last_gps_pub = t
+                    self._last_ego_xyz = (ex, ny, msg.altitude)
 
     # ---------- Competition Vehicle Status ----------
     def loop_status(self, port):
@@ -198,6 +205,14 @@ class Bridge:
             if raw[0:11] != b'#MoraiInfo$' or len(raw) < 27 + 114: continue
             # vel_x 단위 km/h (실측: GPS 1초 변위 속도 대비 정확히 3.6배) -> m/s
             self._status_vel = (rospy.Time.now().to_sec(), struct.unpack_from('<f', raw, 27 + 74)[0] / 3.6)
+            # [2026_AISW] GPS 음영/두절 중에도 속도는 계속 발행. 이전엔 /Competition_topic 이 GPS 수신 때만 나가
+            # 음영 구역에서 속도가 마지막 값(20 kph)으로 얼어 → 제어기는 가속 0(타행), 추측항법은 20 kph 로 적분해
+            # 실제 차는 멈췄는데 추정 위치만 100 m 넘게 앞서 나갔다(2026-10-09 실주행).
+            if self.pub_comp and self._status_vel[0] - self._last_gps_pub > 0.3:
+                ego = EgoVehicleStatus(); ego.header.stamp = rospy.Time.now()
+                ego.position.x, ego.position.y, ego.position.z = self._last_ego_xyz   # GPS 없음: 마지막 위치 (사용 안 함)
+                ego.velocity.x = self._status_vel[1]
+                self.pub_comp.publish(ego)
             # link_id: data @114 ~ 끝(152) 고정길이 문자열, NUL 패딩
             link = raw[27 + 114:27 + 152].split(b'\x00', 1)[0].decode('ascii', 'ignore').strip()
             if link:
@@ -243,6 +258,30 @@ class Bridge:
             pub.publish(m)
 
     # ---------- 미해석 채널 덤프(포맷 확인용) ----------
+    def loop_collision(self, port):
+        # '#CollisionData$'(15) + int32 len + aux12 + data: sec,nsec(i4,i4) + 객체 type(u16, 0xffff=충돌 없음) ...
+        s = udp_sock(port)
+        while not rospy.is_shutdown():
+            try: raw, _ = s.recvfrom(65535)
+            except socket.timeout: continue
+            except OSError: break
+            if raw[0:15] != b'#CollisionData$' or len(raw) < 31 + 12: continue
+            b = raw[31:]
+            m = CollisionData(); m.header.stamp = rospy.Time.now()
+            otype = struct.unpack_from('<H', b, 8)[0]
+            if otype != 0xFFFF:
+                o = ObjectStatus(); o.type = otype
+                o.position.x, o.position.y, o.position.z = struct.unpack_from('<3f', b, 12)
+                m.collision_object.append(o)
+                rospy.logwarn_throttle(1.0, '[aisw_udp_bridge] 충돌! type=%d', otype)
+            self.pub_coll.publish(m)
+            # 검증 전용: 패킷에 실린 자차 위치(음영에서도 나옴)를 추측항법 오차 평가용으로만 발행.
+            # 제어에 쓰면 GPS 음영 미션을 우회하는 셈이라 주행 스택은 구독하지 않는다.
+            if otype == 0xFFFF:
+                pt = PointStamped(); pt.header.stamp = m.header.stamp; pt.header.frame_id = 'map'
+                pt.point.x, pt.point.y, pt.point.z = struct.unpack_from('<3f', b, 12)
+                self.pub_truth.publish(pt)
+
     def loop_dump(self, port, name):
         s = udp_sock(port)
         last = 0

@@ -26,6 +26,7 @@ MAX_STEER = math.radians(40.0)          # 규정 차량 최대 조향각
 HALF_WIDTH = 1.892 / 2.0 + 0.6          # 차폭 절반 + 여유 [m]
 LIDAR_X = 0.58                          # 후륜축 → 라이다 [m] (2026_molit_comp_full_set_2.json)
 MAX_STEER_DEVIATION = math.radians(20.0)
+STEER_RATE = math.radians(75.0)         # 조향 변화율 한계 [rad/s]
 
 ZONE_SPEED = {'shaded': 20.0 / 3.6, 'roundabout': 15.0 / 3.6}   # 룰 목표속도 [m/s]
 SAFE_DECEL = 3.0                        # 통로 장애물 앞 제동 감속도 [m/s^2]
@@ -53,6 +54,7 @@ class AIZoneController:
             log('[ai_zone] %s 정책: %s' % (mode, why if pol is None else 'OK (%s)' % why))
         corr = np.arange(1.0, CORRIDOR_LEN + 0.01, 1.0)
         self._corr_dists = corr
+        self._prev_steer = None
         self.offset = 0.0          # 현재 적용 중인 횡 오프셋 [m]
         self.offset_goal = 0.0
         self._clear_since = None
@@ -61,6 +63,7 @@ class AIZoneController:
     def reset(self):
         self.offset = self.offset_goal = 0.0
         self._clear_since = None
+        self._prev_steer = None
 
     # ---------------------------------------------------------------- 룰
     def _pure_pursuit(self, idx, x, y, yaw, v, offset=0.0):
@@ -154,5 +157,10 @@ class AIZoneController:
             source += '+guard(%.1fm)' % d_obs
         v_cmd = min(v_cmd, self.speed_limit)
         steer = max(-MAX_STEER, min(MAX_STEER, steer))
+        # 조향 변화율 제한 (룰 구간 controller 와 같은 5°/사이클 @15 Hz) — 정책/룰 전환 시 급조향 방지
+        if self._prev_steer is not None:
+            lim = STEER_RATE * dt
+            steer = self._prev_steer + max(-lim, min(lim, steer - self._prev_steer))
+        self._prev_steer = steer
         self.last = dict(steer_rule=steer_rule, d_obs=d_obs, offset=self.offset, source=source)
         return v_cmd, steer, source
